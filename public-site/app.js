@@ -1,4 +1,5 @@
 import {readRequirementDocx,readRequirementXlsx,readRequirementText,requirementMapping} from './requirements.js';
+import {normalizeDueDate,splitQuantityDue,quantityWithDue} from './due-date.js';
 import {orderPrefix,formatOrderNumber,validOrderNumber} from './order-number.js';
 import {parseDocx,exportDocx,extractLoose,transactional,importable,safeFile} from './core.js';
 const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -12,18 +13,18 @@ async function save(){return new Promise((res,rej)=>{const t=db.transaction('dat
 function download(blob,name){const a=document.createElement('a'),url=URL.createObjectURL(blob);a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),10000);}
 function bytes64(data){let s='';const a=new Uint8Array(data);for(let i=0;i<a.length;i+=16384)s+=String.fromCharCode(...a.subarray(i,i+16384));return btoa(s);}
 function template(){return state.suppliers.find(s=>s.id===selected);}
-function newDraft(s){const values={};for(const f of s.fields)values[f.id]=transactional.has(f.key)&&f.key!=='part'?(f.key==='date'?today().replaceAll('-','/'):''):f.value;return {id:uid(),supplierId:s.id,orderSuffix:'',orderNo:orderPrefix(),values,createdAt:new Date().toISOString()};}
+function newDraft(s){const values={};for(const f of s.fields)values[f.id]=transactional.has(f.key)&&f.key!=='part'?(f.key==='date'?today().replaceAll('-','/'):''):f.value;return {id:uid(),supplierId:s.id,orderSuffix:'',orderNo:orderPrefix(),dueDate:'',dueRaw:'',values,createdAt:new Date().toISOString()};}
 function refreshOrderNumber(){if(!draft)return;draft.orderSuffix??=draft.orderNo?.match(/^MH\d{2}A-\d{2}-(\d{3})$/)?.[1]||'';const previous=draft.orderNo;draft.orderNo=formatOrderNumber(draft.orderSuffix);const prefix=$('#order-prefix');if(prefix)prefix.textContent=orderPrefix();const display=$('#order-full');if(display)display.textContent=draft.orderNo;if(previous!==draft.orderNo)renderPreview();}
 
-function activate(id){selected=id;const s=template();draft=s?structuredClone(state.drafts[id]||newDraft(s)):null;scan=null;dirty=false;activeReq=draft?.requirementId||null;if(draft&&s)for(const f of s.fields.filter(f=>f.key==='part'))if(!draft.values[f.id]?.trim())draft.values[f.id]=f.value;refreshOrderNumber();}
+function activate(id){selected=id;state.lastSupplierId=id;const s=template();draft=s?structuredClone(state.drafts[id]||newDraft(s)):null;scan=null;dirty=false;activeReq=draft?.requirementId||null;if(draft&&s)for(const f of s.fields.filter(f=>f.key==='part'))if(!draft.values[f.id]?.trim())draft.values[f.id]=f.value;initializeDueDate();refreshOrderNumber();}
 function switchPage(p){page=p;for(const b of document.querySelectorAll('nav button'))b.classList.toggle('active',b.dataset.page===p);$('#breadcrumb').textContent=({create:'建立採購單',suppliers:'供應商與模板',history:'採購紀錄',settings:'開單資料與備份'})[p];render();}
 function render(){if(page==='create')renderCreate();if(page==='suppliers')renderSuppliers();if(page==='history')renderHistory();if(page==='settings')renderSettings();$('#supplier-count').textContent=state.suppliers.length;}
 function title(eyebrow,h,sub,action=''){return `<div class="title-line"><div><div class="eyebrow">${eyebrow}</div><h1>${h}</h1><p class="sub">${sub}</p></div>${action}</div>`;}
 function card(n,title,body,tag=''){return `<div class="card"><div class="card-head"><h2><span class="number">${n}</span>${title}</h2>${tag?`<span class="pill">${tag}</span>`:''}</div><div class="card-body">${body}</div></div>`;}
 function field(f){
- const names={customerPart:'客戶料號',part:'銘星料號',quantity:'數量／交期',price:'單價／總額',date:'訂購日期',delivery:'交貨地點',payment:'付款條件',material:'材料／板厚',copper:'銅厚',mask:'防焊／文字',finish:'表面處理',notes:'備註',notesTail:'包裝／附件'};
- const label=names[f.key]||f.label,value=draft.values[f.id]??'',full=value.length>45||['quantity','price','notes','notesTail','production','material','mask','inspection'].includes(f.key);
- return '<label class="field '+(full?'full':'')+'">'+esc(label)+(full?'<textarea data-field="'+esc(f.id)+'" rows="'+(value.length>170?5:2)+'">'+esc(value)+'</textarea>':'<input data-field="'+esc(f.id)+'" value="'+esc(value)+'">')+'</label>';
+ const names={customerPart:'客戶料號',part:'銘星料號',quantity:'數量',price:'單價／總額',date:'訂購日期',delivery:'交貨地點',payment:'付款條件',material:'材料／板厚',copper:'銅厚',mask:'防焊／文字',finish:'表面處理',notes:'備註',notesTail:'包裝／附件'};
+ const label=names[f.key]||f.label,value=f.key==='quantity'?splitQuantityDue(draft.values[f.id]).quantity:(draft.values[f.id]??''),full=value.length>45||['quantity','price','notes','notesTail','production','material','mask','inspection'].includes(f.key);
+ return '<label class="field '+(full?'full':'')+'">'+esc(label)+(full?'<textarea data-field="'+esc(f.id)+'" rows="'+(value.length>170?5:2)+'">'+esc(value)+'</textarea>':'<input data-field="'+esc(f.id)+'" value="'+esc(value)+'">')+'</label>'+(f.key==='quantity'?'<label class="field full due-field">交期<input type="date" id="due-date" aria-label="交期" value="'+esc(draft.dueDate||'')+'">'+(!draft.dueDate&&draft.dueRaw?'<small class="hint">原交期：'+esc(draft.dueRaw)+'</small>':'')+'</label>':'');
 }
 function renderCreate(){
  const s=template();refreshOrderNumber();const primary=['customerPart','part','quantity','price','payment'];
@@ -46,10 +47,11 @@ el.innerHTML=`<div class="paper-top"><div><h2>採 購 單</h2><small>PURCHASE OR
 function bindCreate(){
  $('#source-file').onchange=e=>processFiles(e.target.files);
  const drop=$('#drop-zone');drop.ondragover=e=>{e.preventDefault();drop.classList.add('drag');};drop.ondragleave=()=>drop.classList.remove('drag');drop.ondrop=e=>{e.preventDefault();drop.classList.remove('drag');processFiles(e.dataTransfer.files);};
- $('#supplier-select').onchange=async e=>{if(busy){e.target.value=selected;return;}const id=e.target.value,source=scan,r=state.requirements?.find(r=>r.id===activeReq),suffix=draft?.orderSuffix||'';if(draft&&dirty){state.drafts[selected]=structuredClone(draft);try{await save();}catch(err){toast('儲存失敗：'+err.message);e.target.value=selected;return;}}activate(id);scan=source;if(r)applySimpleRequirement(r,suffix);renderCreate();};
+ $('#supplier-select').onchange=async e=>{if(busy){e.target.value=selected;return;}const id=e.target.value;if(id===selected)return;const source=scan,r=state.requirements?.find(r=>r.id===activeReq),suffix=draft?.orderSuffix||'',due=draft?.dueDate||'',dueRaw=draft?.dueRaw||'';if(draft&&dirty){state.drafts[selected]=structuredClone(draft);try{await save();}catch(err){toast('儲存失敗：'+err.message);e.target.value=selected;return;}}activate(id);scan=source;if(r){applySimpleRequirement(r,suffix);draft.dueDate=due;draft.dueRaw=dueRaw;syncDueDate(!!due||!dueRaw);}renderCreate();};
  $('#manage-templates').onclick=()=>switchPage('suppliers');
  $('#new-order').onclick=()=>{if(busy)return;if(dirty&&!confirm('目前修改尚未儲存，確定建立新單？'))return;const s=template();if(s){draft=newDraft(s);activeReq=null;scan=null;dirty=false;renderCreate();}};
- for(const input of document.querySelectorAll('[data-field]'))input.oninput=()=>{draft.values[input.dataset.field]=input.value;dirty=true;renderPreview();};
+ for(const input of document.querySelectorAll('[data-field]'))input.oninput=()=>{const f=template().fields.find(f=>f.id===input.dataset.field);draft.values[input.dataset.field]=f?.key==='quantity'?quantityWithDue(input.value,draft.dueDate,draft.dueRaw):input.value;dirty=true;renderPreview();};
+ $('#due-date')?.addEventListener('change',e=>{draft.dueDate=normalizeDueDate(e.target.value);draft.dueRaw='';syncDueDate(true);dirty=true;renderPreview();});
  $('#order-suffix')?.addEventListener('input',e=>{if(!draft)return;e.target.value=e.target.value.replace(/[^0-9]/g,'').slice(0,3);draft.orderSuffix=e.target.value;dirty=true;refreshOrderNumber();renderPreview();});
  $('#order-suffix')?.addEventListener('blur',e=>{if(!draft)return;if(e.target.value)e.target.value=e.target.value.padStart(3,'0');draft.orderSuffix=e.target.value;refreshOrderNumber();renderPreview();});
  $('#parse-text').onclick=async()=>{if(busy)return;if(!template()){toast('請先新增供應商模板');return;}const text=$('#paste-text').value;if(!text.trim()){toast('請先貼上文字');return;}const r=readRequirementText(text);state.requirements.push(r);applySimpleRequirement(r);scan={text,message:'已套入文字需求'};state.drafts[selected]=structuredClone(draft);await save();renderCreate();};
@@ -57,7 +59,7 @@ function bindCreate(){
  $('#export-word').onclick=()=>generate();$('#print-order').onclick=()=>{if(validate())window.print();};
 }
 function applySimpleRequirement(r,suffix=draft?.orderSuffix||''){
- const s=template();if(!s)return;const priorPart=Object.fromEntries(s.fields.filter(f=>f.key==='part').map(f=>[f.id,draft?.values[f.id]||f.value]));draft=newDraft(s);draft.orderSuffix=suffix;const mapped=requirementMapping(r,s);if(!r.fields.internalPart?.value)for(const [id,value]of Object.entries(priorPart))mapped[id]=value;for(const f of s.fields){if(f.key==='production')mapped[f.id]='依本採購單客戶需求附件及客戶提供之製作檔案執行。';if(['notes','notesTail'].includes(f.key)&&mapped[f.id])mapped[f.id]='依本採購單客戶需求附件及本次交付條款。';}Object.assign(draft.values,mapped);draft.requirementId=r.id;activeReq=r.id;refreshOrderNumber();dirty=true;
+ const s=template();if(!s)return;const priorPart=Object.fromEntries(s.fields.filter(f=>f.key==='part').map(f=>[f.id,draft?.values[f.id]||f.value]));draft=newDraft(s);draft.orderSuffix=suffix;const mapped=requirementMapping(r,s);if(!r.fields.internalPart?.value)for(const [id,value]of Object.entries(priorPart))mapped[id]=value;for(const f of s.fields){if(f.key==='production')mapped[f.id]='依本採購單客戶需求附件及客戶提供之製作檔案執行。';if(['notes','notesTail'].includes(f.key)&&mapped[f.id])mapped[f.id]='依本採購單客戶需求附件及本次交付條款。';}Object.assign(draft.values,mapped);draft.dueDate=normalizeDueDate(r.fields.due?.value||'');draft.dueRaw=r.fields.due?.value||'';initializeDueDate();draft.requirementId=r.id;activeReq=r.id;refreshOrderNumber();dirty=true;
 }
 
 function applyExtracted(extracted){if(!draft)return;let n=0;for(const f of template().fields)if(importable.has(f.key)&&extracted[f.key]){draft.values[f.id]=extracted[f.key];n++;}draft.reviewed=false;dirty=true;return n;}
@@ -84,7 +86,7 @@ async function processFile(file){
  }catch(e){status('分析未完成：'+e.message);toast('分析未完成：'+e.message);}finally{busy=false;document.body.classList.remove('busy');}
 }
 
-function validate(){if(!draft)return false;refreshOrderNumber();if(!validOrderNumber(draft.orderNo)){toast('請填寫最後三碼編號，例如 035');$('#order-suffix')?.focus();return false;}if(state.orders.some(o=>o.id!==draft.id&&o.orderNo===draft.orderNo)){toast('此訂單號碼已存在，請修改最後三碼');return false;}return true;}
+function validate(){if(!draft)return false;syncDueDate();refreshOrderNumber();if(!validOrderNumber(draft.orderNo)){toast('請填寫最後三碼編號，例如 035');$('#order-suffix')?.focus();return false;}if(state.orders.some(o=>o.id!==draft.id&&o.orderNo===draft.orderNo)){toast('此訂單號碼已存在，請修改最後三碼');return false;}return true;}
 
 async function generate(){if(busy||!validate())return;busy=true;$('#export-word').disabled=true;try{const s=template();const blob=await exportDocx(s,draft.values,draft.orderNo);const record={...structuredClone(draft),savedAt:new Date().toISOString(),supplierName:s.name,templateSnapshot:structuredClone(s)};state.orders=state.orders.filter(o=>o.id!==draft.id);state.orders.unshift(record);state.drafts[selected]=structuredClone(draft);await save();download(blob,safeFile(draft.orderNo+'_'+s.short)+'採購單.docx');dirty=false;toast('Word 採購單已匯出，並儲存採購紀錄');}catch(e){toast('匯出失敗：'+e.message);}finally{busy=false;const b=$('#export-word');if(b)b.disabled=false;}}
 function renderSuppliers(){app.innerHTML=title('SUPPLIERS & TEMPLATES','供應商與模板','每家供應商擁有自己的 Word 版型、付款條件與採購紀錄。','<button class="primary" id="add-supplier">＋ 新增供應商模板</button>')+`<div class="message" style="margin-bottom:22px">請上傳各供應商的 Word 模板，或從「開單資料與備份」還原原本備份。模板與採購紀錄只保存在目前瀏覽器。</div><div class="supplier-grid">${state.suppliers.map(s=>`<article class="supplier-card"><div style="display:flex;justify-content:space-between"><div class="avatar">${esc(s.short[0])}</div><span class="badge">專屬 Word 模板</span></div><h3>${esc(s.short)}</h3><p>${esc(s.name)}<br>${esc(s.filename)}</p><div class="actions"><button class="primary" data-use="${s.id}">建立採購單</button><button data-edit="${s.id}">編輯模板</button></div><div style="display:flex;justify-content:space-between;margin-top:12px"><button class="text small" data-original="${s.id}">下載模板原檔 ↗</button><button class="text small danger" data-delete="${s.id}">刪除</button></div></article>`).join('')}</div>`;
@@ -101,11 +103,31 @@ async function validateBackup(v){if(v?.format!=='purchase-studio-backup-v1'||!Ar
 async function backup(){try{const exportState=structuredClone(state);if(draft)exportState.drafts[selected]=structuredClone(draft);download(new Blob([JSON.stringify({format:'purchase-studio-backup-v1',exportedAt:new Date().toISOString(),workspace:exportState})],{type:'application/json'}),'採購工作室備份_'+today()+'.json');toast('完整備份已匯出');}catch(e){toast('備份失敗：'+e.message);}}
 for(const b of document.querySelectorAll('nav button'))b.onclick=()=>{if(busy){toast('正在處理文件，請稍候');return;}switchPage(b.dataset.page);};$('#quick-backup').onclick=backup;
 window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});
-async function init(){app.innerHTML='<div class="empty">正在準備供應商專屬模板…</div>';try{db=await openDB();state=await read();if(!state){const r=await fetch('samples.json');if(!r.ok)throw Error('無法讀取初始模板');const samples=await r.json();state={suppliers:[],orders:[],drafts:{},company:{name:'',address:'',phone:'',taxId:''}};for(const f of samples.files){const data=Uint8Array.from(atob(f.data),c=>c.charCodeAt(0));const p=await parseDocx(data);state.suppliers.push({id:uid(),short:f.name.match(/[（(](.+?)[）)]/)?.[1]||'威爾高',name:p.name,filename:f.name,data:f.data,fields:p.fields,rows:p.rows});}await save();}state.requirements??=[];activate(state.suppliers[0]?.id||'');render();}catch(e){app.innerHTML=`<div class="card"><div class="empty"><b>無法開啟工作區</b>${esc(e.message)}<p>請允許瀏覽器儲存資料，並確認使用 HTTP 網址開啟網站。</p><button onclick="location.reload()">重試</button></div></div>`;}}
+async function init(){app.innerHTML='<div class="empty">正在準備供應商專屬模板…</div>';try{db=await openDB();state=await read();if(!state){const r=await fetch('samples.json');if(!r.ok)throw Error('無法讀取初始模板');const samples=await r.json();state={suppliers:[],orders:[],drafts:{},company:{name:'',address:'',phone:'',taxId:''}};for(const f of samples.files){const data=Uint8Array.from(atob(f.data),c=>c.charCodeAt(0));const p=await parseDocx(data);state.suppliers.push({id:uid(),short:f.name.match(/[（(](.+?)[）)]/)?.[1]||'威爾高',name:p.name,filename:f.name,data:f.data,fields:p.fields,rows:p.rows});}await save();}state.requirements??=[];activate(state.suppliers.find(s=>s.id===state.lastSupplierId)?.id||state.suppliers[0]?.id||'');render();}catch(e){app.innerHTML=`<div class="card"><div class="empty"><b>無法開啟工作區</b>${esc(e.message)}<p>請允許瀏覽器儲存資料，並確認使用 HTTP 網址開啟網站。</p><button onclick="location.reload()">重試</button></div></div>`;}}
 init();
 
 setInterval(()=>{if(page==='create')refreshOrderNumber();},30000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&page==='create')refreshOrderNumber();});
 window.addEventListener('beforeprint',()=>{const el=document.querySelector('.requirement-preview');if(el){if(!el.hasAttribute('data-print-open'))el.dataset.printOpen=el.open?'1':'0';el.open=true;}});
 window.addEventListener('afterprint',()=>{const el=document.querySelector('.requirement-preview[data-print-open]');if(el){el.open=el.dataset.printOpen==='1';delete el.dataset.printOpen;}});
+
+
+function initializeDueDate(){
+ if(!draft||!template())return;
+ const first=template().fields.find(f=>f.key==='quantity'),parts=splitQuantityDue(first?draft.values[first.id]:'');
+ if(draft.dueDate===undefined)draft.dueDate=normalizeDueDate(parts.rawDue);
+ if(!draft.dueDate&&parts.rawDue)draft.dueDate=normalizeDueDate(parts.rawDue);
+ draft.dueRaw=draft.dueRaw||parts.rawDue;
+ syncDueDate();
+}
+function syncDueDate(manual=false){
+ if(!draft||!template())return;
+ for(const f of template().fields.filter(f=>f.key==='quantity'))draft.values[f.id]=quantityWithDue(draft.values[f.id],draft.dueDate,draft.dueRaw);
+ if(manual){
+  const rows=draft.values.__requirementAppendix||[],filtered=rows.filter(r=>!['需求交期','交期'].includes(r.label));
+  if(draft.dueDate)filtered.push({label:'交期',value:draft.dueDate.replaceAll('-','/'),source:'採購指定'});
+  draft.values.__requirementAppendix=filtered;
+ }
+}
+
 
