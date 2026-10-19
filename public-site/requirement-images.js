@@ -2,12 +2,14 @@ const W='http://schemas.openxmlformats.org/wordprocessingml/2006/main',R='http:/
 const xml=s=>new DOMParser().parseFromString(s,'application/xml');
 const mime={png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',bmp:'image/bmp',tif:'image/tiff',tiff:'image/tiff',emf:'image/x-emf',wmf:'image/x-wmf'};
 const hash=async bytes=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))).map(v=>v.toString(16).padStart(2,'0')).join('');
+const identity=/logo|signature|sign[-_ ]?off|簽名|签名|簽核|签核|簽章|签章|印章|用印|核准|審核|审核|公司標誌|公司标志|商標|商标/i;
+export const isAllowedImage=image=>!!image&&!image.excluded&&(image.origin==='upload'||image.kind==='requirement')&&!identity.test(image.description||'');
 function base64(bytes){let text='';for(let i=0;i<bytes.length;i+=16384)text+=String.fromCharCode(...bytes.subarray(i,i+16384));return btoa(text);}
 export async function imageFile(file){
  let bytes=new Uint8Array(await file.arrayBuffer()),ext=file.name.split('.').pop().toLowerCase(),width,height;
  const bitmap=await createImageBitmap(file);width=bitmap.width;height=bitmap.height;
  if(ext==='webp'){const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;canvas.getContext('2d').drawImage(bitmap,0,0);const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));bytes=new Uint8Array(await blob.arrayBuffer());ext='png';}bitmap.close();
- return {id:await hash(bytes),data:base64(bytes),ext,mime:mime[ext],cx:width*9525,cy:height*9525};
+ return {id:await hash(bytes),data:base64(bytes),ext,mime:mime[ext],cx:width*9525,cy:height*9525,origin:'upload',description:file.name,excluded:identity.test(file.name)};
 }
 export async function documentImages(zip,document){
  const part=zip.file('word/_rels/document.xml.rels');if(!part)return [];
@@ -17,14 +19,18 @@ export async function documentImages(zip,document){
   const target=rel.getAttribute('Target');const parts=(target.startsWith('/')?target.slice(1):'word/'+target).split('/'),path=[];for(const p of parts){if(p==='..')path.pop();else if(p&&p!=='.')path.push(p);}const file=zip.file(path.join('/'));if(!file)continue;
   const ext=target.split('.').pop().toLowerCase();if(!mime[ext])continue;const bytes=await file.async('uint8array'),key=await hash(bytes);if(images.some(i=>i.id===key))continue;
   let parent=node;while(parent&&parent.localName!=='drawing'&&parent.localName!=='pict')parent=parent.parentNode;const extent=parent?.getElementsByTagNameNS('*','extent')[0];
-  images.push({id:key,data:base64(bytes),ext,mime:mime[ext],cx:Number(extent?.getAttribute('cx'))||5000000,cy:Number(extent?.getAttribute('cy'))||2500000});
+  let cell=parent;while(cell&&cell.localName!=='tc')cell=cell.parentNode;const para=node.closest?.('p')||parent?.parentNode;
+  const metadata=Array.from(parent?.getElementsByTagName('*')||[]).filter(n=>['docPr','cNvPr'].includes(n.localName)).map(n=>['name','descr','title'].map(k=>n.getAttribute(k)||'').join(' ')).join(' ');
+  const context=(cell?.textContent||'')+' '+(para?.previousElementSibling?.textContent||'');const description=target+' '+metadata;
+  if(identity.test(description)||identity.test(context)||!/規格|製作|制作|板厚|銅厚|铜厚|阻抗|拼板|排版|成型|品質標準|品质标准|檢驗重點|检验重点|出貨附件|出货附件|注意事項|注意事项|包裝|包装|specification|stackup|impedance|panel|fabrication/i.test(context+' '+metadata))continue;
+  images.push({id:key,data:base64(bytes),ext,mime:mime[ext],cx:Number(extent?.getAttribute('cx'))||5000000,cy:Number(extent?.getAttribute('cy'))||2500000,origin:'document',kind:'requirement',description});
  }return images;
 }
-export function combineImages(...groups){return [...new Map(groups.flat().filter(Boolean).map(i=>[i.id,i])).values()];}
+export function combineImages(...groups){return [...new Map(groups.flat().filter(isAllowedImage).map(i=>[i.id,i])).values()];}
 export async function insertImages(zip,doc,template,images){
  if(!images?.length)return;
  const existing=new Set();for(const file of Object.values(zip.files).filter(f=>/^word\/media\//.test(f.name)&&!f.dir))existing.add(await hash(await file.async('uint8array')));
- const pending=images.filter(i=>{if(existing.has(i.id))return false;existing.add(i.id);return true;});if(!pending.length)return;
+ const pending=images.filter(i=>{if(!isAllowedImage(i)||existing.has(i.id))return false;existing.add(i.id);return true;});if(!pending.length)return;
  const field=template.fields.find(f=>f.key==='notesTail')||template.fields.find(f=>f.key==='notes');if(!field)throw Error('此模板沒有可放置原圖的備註格，請先在 Word 模板保留圖片位置');
  const cell=doc.getElementsByTagNameNS(W,'tc')[field.cell],paragraphs=Array.from(cell.children).filter(n=>n.localName==='p'),p=paragraphs.at(-1);if(!p)throw Error('找不到原圖放置位置');
  const path='word/_rels/document.xml.rels',rels=xml(zip.file(path)?await zip.file(path).async('string'):'<Relationships xmlns="'+REL+'"/>'),types=xml(await zip.file('[Content_Types].xml').async('string'));

@@ -1,5 +1,5 @@
 import {createWordEditor} from './word-editor.js';
-import {imageFile,combineImages} from './requirement-images.js';
+import {imageFile,combineImages,isAllowedImage} from './requirement-images.js';
 import {upgradeWorkspace,replaceSupplierTemplate} from './template-update.js';
 import {DELIVERY,creationDate,supplierDisplay,formRows,supplementalRows,normalizeDraft,intakeValues} from './order-layout.js';
 import {readRequirementDocx,readRequirementXlsx,readRequirementText,requirementMapping} from './requirements.js';
@@ -78,11 +78,11 @@ async function processFile(file){
   if(ext==='docx')r=await readRequirementDocx(bytes,file.name);
   else if(ext==='xlsx')r=await readRequirementXlsx(bytes,file.name);
   else if(ext==='txt')r=readRequirementText(await file.text(),file.name);
-  else if(['jpg','jpeg','png','webp'].includes(ext)){r=readRequirementText('',file.name);r.images=[await imageFile(file)];}
+  else if(['jpg','jpeg','png','webp'].includes(ext)){r=readRequirementText('',file.name);const image=await imageFile(file);r.images=isAllowedImage(image)?[image]:[];if(!r.images.length){status('已略過 Logo／簽名圖片');return;}}
   else if(ext==='pdf'){
    const pdfjs=await import('./vendor/pdf.min.mjs');pdfjs.GlobalWorkerOptions.workerSrc='./vendor/pdf.worker.min.mjs';const pdf=await pdfjs.getDocument({data:bytes.slice(0)}).promise;
    if(pdf.numPages>15){await pdf.destroy();throw Error('PDF 超過 15 頁，請先擷取與需求有關的頁面。');}
-   try{for(let i=1;i<=pdf.numPages;i++){status('讀取 PDF 第 '+i+' / '+pdf.numPages+' 頁…');const p=await pdf.getPage(i),tc=await p.getTextContent();let pt=tc.items.map(t=>t.str+(t.hasEOL?'\n':' ')).join('');if(pt.trim().length<20){const v=p.getViewport({scale:1.7}),c=document.createElement('canvas');c.width=v.width;c.height=v.height;await p.render({canvasContext:c.getContext('2d'),viewport:v}).promise;const blob=await new Promise(resolve=>c.toBlob(resolve,'image/png'));r??=readRequirementText('',file.name);r.images??=[];r.images.push(await imageFile(new File([blob],'page-'+i+'.png',{type:'image/png'})));pt='';c.width=c.height=0;}text+=pt+'\n';}}finally{await pdf.destroy();}const images=r?.images||[];r=readRequirementText(text,file.name);r.images=images;
+   try{for(let i=1;i<=pdf.numPages;i++){status('讀取 PDF 第 '+i+' / '+pdf.numPages+' 頁…');const p=await pdf.getPage(i),tc=await p.getTextContent();let pt=tc.items.map(t=>t.str+(t.hasEOL?'\n':' ')).join('');if(pt.trim().length<20)pt='';text+=pt+'\n';}}finally{await pdf.destroy();}const images=r?.images||[];r=readRequirementText(text,file.name);r.images=images;
   }else throw Error('支援 DOCX、XLSX、PDF、圖片及 TXT。');
   if(!r.text.trim()&&!r.images?.length)throw Error('沒有取得可用內容，請檢查檔案。');r.sourceData=bytes64(bytes);state.requirements.push(r);applySimpleRequirement(r);scan={text:r.text,message:file.name+(r.images?.length?'（保留 '+r.images.length+' 張原圖）':'')};state.drafts[selected]=structuredClone(draft);await save();renderCreate();toast('已直接套入 '+template().short+' 採購單');
  }catch(e){status('分析未完成：'+e.message);toast('分析未完成：'+e.message);}finally{busy=false;document.body.classList.remove('busy');}

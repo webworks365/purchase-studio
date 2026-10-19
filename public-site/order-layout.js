@@ -1,3 +1,4 @@
+import {bisSpareDefault} from './note-format.js';
 import {requirementFields,requirementMapping,requirementTargets} from './requirements.js';
 export const DELIVERY='銘星科技有限公司';
 export function creationDate(iso){return new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Taipei'}).format(new Date(iso)).replaceAll('-','/');}
@@ -29,6 +30,7 @@ export function normalizeDraft(s,draft){
  for(const f of s.fields){if(f.key==='date')draft.values[f.id]=creationDate(new Date().toISOString());if(f.key==='delivery')draft.values[f.id]=DELIVERY;
   if(['production','notes','notesTail'].includes(f.key)&&generated.has(draft.values[f.id]))draft.values[f.id]=f.value;
  }
+ if(draft.bisSpareVersion!==1){bisSpareDefault(s,draft.values);draft.bisSpareVersion=1;}
  if(draft.notesPolicyVersion!==2){removeGeneratedNotes(s,draft.values);draft.notesPolicyVersion=2;}
 }
 function patchCombined(base,key,value){
