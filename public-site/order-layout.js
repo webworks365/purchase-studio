@@ -1,3 +1,4 @@
+import {applyDueRequirement,fixedDelivery} from './inline-due.js';
 import {bisSpareDefault} from './note-format.js';
 import {requirementFields,requirementMapping,requirementTargets} from './requirements.js';
 export const DELIVERY='銘星科技有限公司';
@@ -27,7 +28,7 @@ function removeGeneratedNotes(s,values){
 export function normalizeDraft(s,draft){
  draft.createdAt??=new Date().toISOString();
  const generated=new Set(['依本採購單「客戶製作要求」附件及已確認之製作檔案執行。','依本採購單之客戶製作要求附件，及本次經確認的供應商交付條款。','依本採購單客戶需求附件及客戶提供之製作檔案執行。','依本採購單客戶需求附件及本次交付條款。']);
- for(const f of s.fields){if(f.key==='date')draft.values[f.id]=creationDate(new Date().toISOString());if(f.key==='delivery')draft.values[f.id]=DELIVERY;
+ for(const f of s.fields){if(f.key==='date')draft.values[f.id]=creationDate(draft.createdAt);if(f.key==='delivery')draft.values[f.id]=draft.values.__inlineDue?fixedDelivery(draft.values[f.id]):DELIVERY;
   if(['production','notes','notesTail'].includes(f.key)&&generated.has(draft.values[f.id]))draft.values[f.id]=f.value;
  }
  if(draft.bisSpareVersion!==1){bisSpareDefault(s,draft.values);draft.bisSpareVersion=1;}
@@ -46,7 +47,7 @@ export function intakeValues(r,s,previous={}){
   const items=Object.entries(r.fields).filter(([key,e])=>e.value?.trim()&&requirementTargets(s,key).some(t=>t.id===f.id));
   if(f.key==='material'&&items.length){let base=previous[f.id]??f.value;for(const key of ['material','layers','thickness']){const e=items.find(([k])=>k===key);if(e)base=patchCombined(base,key,e[1].value);}values[f.id]=base;}
   if(['production','notes','notesTail'].includes(f.key)&&mapped[f.id]!==undefined)values[f.id]=addUnique(cleanPrevious[f.id]??f.value,'',mapped[f.id]);
-  if(f.key==='delivery')values[f.id]=DELIVERY;
+  if(f.key==='delivery')values[f.id]=values.__inlineDue?fixedDelivery(values[f.id]):DELIVERY;
  }
- mergeSupplements(s,values);return values;
+ applyDueRequirement(s,values,cleanPrevious,r);mergeSupplements(s,values);return values;
 }

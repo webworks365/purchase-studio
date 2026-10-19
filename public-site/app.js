@@ -1,3 +1,4 @@
+import {dueTarget,transferDue} from './inline-due.js';
 import {createWordEditor} from './word-editor.js';
 import {imageFile,combineImages,isAllowedImage} from './requirement-images.js';
 import {upgradeWorkspace,replaceSupplierTemplate} from './template-update.js';
@@ -5,7 +6,7 @@ import {DELIVERY,creationDate,supplierDisplay,formRows,supplementalRows,normaliz
 import {readRequirementDocx,readRequirementXlsx,readRequirementText,requirementMapping} from './requirements.js';
 import {normalizeDueDate,splitQuantityDue,quantityWithDue} from './due-date.js';
 import {orderPrefix,formatOrderNumber,validOrderNumber} from './order-number.js';
-import {parseDocx,exportDocx,extractLoose,transactional,importable,safeFile} from './core.js';
+import {parseDocx,exportDocx,prepareInlineDue,extractLoose,transactional,importable,safeFile} from './core.js';
 const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const uid=()=>crypto.randomUUID(),today=()=>new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Taipei'}).format(new Date());
 let db,state,page='create',selected='',draft=null,busy=false,scan=null,dirty=false,activeReq=null;
@@ -17,7 +18,7 @@ async function save(){return new Promise((res,rej)=>{const t=db.transaction('dat
 function download(blob,name){const a=document.createElement('a'),url=URL.createObjectURL(blob);a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),10000);}
 function bytes64(data){let s='';const a=new Uint8Array(data);for(let i=0;i<a.length;i+=16384)s+=String.fromCharCode(...a.subarray(i,i+16384));return btoa(s);}
 function template(){return state.suppliers.find(s=>s.id===selected);}
-function newDraft(s){const values={};for(const f of s.fields)values[f.id]=f.value;const result={id:uid(),supplierId:s.id,orderSuffix:'',orderNo:orderPrefix(),dueDate:today(),dueRaw:'',defaultsVersion:3,values,createdAt:new Date().toISOString()};normalizeDraft(s,result);result.values.__dueDate=result.dueDate;result.values.__dueRaw='';return result;}
+function newDraft(s){const values={};for(const f of s.fields)values[f.id]=f.value;const result={id:uid(),supplierId:s.id,orderSuffix:'',orderNo:orderPrefix(),dueDate:today(),dueRaw:'',defaultsVersion:3,values,createdAt:new Date().toISOString()};normalizeDraft(s,result);result.values.__dueDate=result.dueDate;result.values.__dueRaw='';result.values=prepareInlineDue(s,result.values);return result;}
 function refreshOrderNumber(){if(!draft)return;draft.orderSuffix??=draft.orderNo?.match(/^MH\d{2}A-\d{2}-(\d{3})$/)?.[1]||'';const previous=draft.orderNo;draft.orderNo=formatOrderNumber(draft.orderSuffix);if(previous!==draft.orderNo)wordEditor?.refresh();const prefix=$('#order-prefix');if(prefix)prefix.textContent=orderPrefix();const display=$('#order-full');if(display)display.textContent=draft.orderNo;}
 
 function activate(id){selected=id;state.lastSupplierId=id;const s=template();draft=s?structuredClone(state.drafts[id]||newDraft(s)):null;scan=null;dirty=false;activeReq=draft?.requirementId||null;if(draft&&s)for(const f of s.fields.filter(f=>['part','price'].includes(f.key)))if(!draft.values[f.id]?.trim())draft.values[f.id]=f.value;if(draft&&s)normalizeDraft(s,draft);initializeDueDate();refreshOrderNumber();}
@@ -25,11 +26,6 @@ function switchPage(p){wordEditor?.dispose();wordEditor=null;page=p;for(const b 
 function render(){if(page==='create')renderCreate();if(page==='suppliers')renderSuppliers();if(page==='history')renderHistory();if(page==='settings')renderSettings();$('#supplier-count').textContent=state.suppliers.length;}
 function title(eyebrow,h,sub,action=''){return `<div class="title-line"><div><div class="eyebrow">${eyebrow}</div><h1>${h}</h1><p class="sub">${sub}</p></div>${action}</div>`;}
 function card(n,title,body,tag=''){return `<div class="card"><div class="card-head"><h2><span class="number">${n}</span>${title}</h2>${tag?`<span class="pill">${tag}</span>`:''}</div><div class="card-body">${body}</div></div>`;}
-function field(f){
- const names={customerPart:'客戶料號',part:'銘星料號',quantity:'數量',price:'單價／總額',date:'訂購日期',delivery:'交貨地點',payment:'付款條件',material:'材料／板厚',copper:'銅厚',mask:'防焊／文字',finish:'表面處理',notes:'備註',notesTail:'包裝／附件'};
- const label=f.key==='quantity'?'數量':f.label,value=f.key==='quantity'?splitQuantityDue(draft.values[f.id]).quantity:(draft.values[f.id]??''),full=value.length>45||['quantity','price','notes','notesTail','production','material','mask','inspection'].includes(f.key);
- return '<label class="field '+(full?'full':'')+'"><span class="word-field-label">'+esc(label)+'</span>'+(full?'<textarea data-field="'+esc(f.id)+'" rows="'+(value.length>170?5:2)+'">'+esc(value)+'</textarea>':'<input data-field="'+esc(f.id)+'" '+(['date','delivery'].includes(f.key)?'readonly aria-readonly="true" ':'')+'value="'+esc(value)+'">')+'</label>'+(f.key==='quantity'?'<label class="field full due-field"><span class="word-field-label">交期</span><input type="date" id="due-date" aria-label="交期" value="'+esc(draft.dueDate||'')+'">'+(!draft.dueDate&&draft.dueRaw?'<small class="hint">原交期：'+esc(draft.dueRaw)+'</small>':'')+'</label>':'');
-}
 function renderCreate(){
  wordEditor?.dispose();wordEditor=null;const s=template();refreshOrderNumber();
  app.innerHTML=title('','採購單','','<div class="actions order-actions"><button id="new-order">＋ 新增</button><button id="save-draft" '+(s?'':'disabled')+'>存草稿</button><button id="export-word" class="primary" '+(s?'':'disabled')+'>下載 Word</button></div>')+
@@ -38,7 +34,7 @@ function renderCreate(){
  <div class="order-setup"><div class="entry-top"><label class="field">供應商<select id="supplier-select" aria-label="供應商">${state.suppliers.map(t=>'<option value="'+t.id+'" '+(t.id===selected?'selected':'')+'>'+esc(supplierDisplay(t))+'</option>').join('')}</select></label><button class="text small" id="manage-templates">模板設定</button></div><label class="field order-field">訂單號碼<div class="order-number"><span id="order-prefix">${orderPrefix()}</span><input id="order-suffix" inputmode="numeric" maxlength="3" aria-label="自訂三位數編號" placeholder="035" value="${esc(draft?.orderSuffix||'')}" ${s?'':'disabled'}></div></label></div>
  <label class="drop" id="drop-zone"><input id="source-file" type="file" aria-label="上傳客戶需求" accept=".docx,.xlsx,.pdf,.png,.jpg,.jpeg,.webp,.txt" ${s?'':'disabled'}><strong>＋ 上傳需求</strong><small>Word、Excel、PDF、圖片</small></label><div id="scan-status" class="scan-info" role="status">${scan?esc(scan.message):''}</div>
  </div></div>
- ${s?'<div class="word-editor-toolbar"><label for="due-date">交期</label><input type="date" id="due-date" aria-label="交期" value="'+esc(draft.dueDate||'')+'"></div><div id="word-original-editor" aria-label="原稿採購單"></div>':''}
+ ${s?'<div id="word-original-editor" aria-label="原稿採購單"></div>':''}
  <div id="order-attachments"></div>
  </div>`;
  bindCreate();renderAttachmentFields();if(s){const current=draft;wordEditor=createWordEditor($('#word-original-editor'),s,{getValues:()=>current.values,getOrderNo:()=>current.orderNo,onChange:changes=>{if(draft!==current)return;Object.assign(current.values,changes);dirty=true;},onError:toast});}
@@ -48,11 +44,11 @@ function renderAttachmentFields(){const el=$('#order-attachments');if(el)el.inne
 function bindCreate(){
  $('#source-file').onchange=e=>processFiles(e.target.files);
  const drop=$('#drop-zone');drop.ondragover=e=>{e.preventDefault();drop.classList.add('drag');};drop.ondragleave=()=>drop.classList.remove('drag');drop.ondrop=e=>{e.preventDefault();drop.classList.remove('drag');processFiles(e.dataTransfer.files);};
- $('#supplier-select').onchange=async e=>{if(busy){e.target.value=selected;return;}const id=e.target.value;if(id===selected)return;const source=scan,r=state.requirements?.find(r=>r.id===activeReq),suffix=draft?.orderSuffix||'',due=draft?.dueDate||'',dueRaw=draft?.dueRaw||'';if(draft&&dirty){state.drafts[selected]=structuredClone(draft);try{await save();}catch(err){toast('儲存失敗：'+err.message);e.target.value=selected;return;}}activate(id);scan=source;if(r){applySimpleRequirement(r,suffix);draft.dueDate=due;draft.dueRaw=dueRaw;syncDueDate(!!due||!dueRaw);}renderCreate();};
+ $('#supplier-select').onchange=async e=>{if(busy){e.target.value=selected;return;}const id=e.target.value;if(id===selected)return;const sourceDue=splitQuantityDue(draft?.values[dueTarget(template())?.id]||'').rawDue;const source=scan,r=state.requirements?.find(r=>r.id===activeReq),suffix=draft?.orderSuffix||'',due=draft?.dueDate||'',dueRaw=draft?.dueRaw||'';if(draft&&dirty){state.drafts[selected]=structuredClone(draft);try{await save();}catch(err){toast('儲存失敗：'+err.message);e.target.value=selected;return;}}activate(id);scan=source;if(r){applySimpleRequirement(r,suffix);transferDue(template(),draft.values,sourceDue);}renderCreate();};
  $('#manage-templates').onclick=()=>switchPage('suppliers');
  $('#new-order').onclick=()=>{if(busy)return;if(dirty&&!confirm('目前修改尚未儲存，確定建立新單？'))return;const s=template();if(s){draft=newDraft(s);activeReq=null;scan=null;dirty=false;renderCreate();}};
  for(const input of document.querySelectorAll('[data-field]'))input.oninput=()=>{const f=template().fields.find(f=>f.id===input.dataset.field);draft.values[input.dataset.field]=f?.key==='quantity'?quantityWithDue(input.value,draft.dueDate,draft.dueRaw):input.value;dirty=true;expandOrderText();};
- $('#due-date')?.addEventListener('change',e=>{draft.dueDate=normalizeDueDate(e.target.value);draft.dueRaw='';syncDueDate(true);wordEditor?.refresh();dirty=true;});
+
  $('#order-suffix')?.addEventListener('input',e=>{if(!draft)return;e.target.value=e.target.value.replace(/[^0-9]/g,'').slice(0,3);draft.orderSuffix=e.target.value;dirty=true;refreshOrderNumber();});
  $('#order-suffix')?.addEventListener('blur',e=>{if(!draft)return;if(e.target.value)e.target.value=e.target.value.padStart(3,'0');draft.orderSuffix=e.target.value;refreshOrderNumber();});
 
@@ -61,8 +57,8 @@ function bindCreate(){
 }
 function applySimpleRequirement(r,suffix=draft?.orderSuffix||''){
  const s=template();if(!s)return;const previous=draft?.values||{},createdAt=draft?.createdAt||new Date().toISOString();
- const previousDue=draft?.dueDate||today();draft=newDraft(s);draft.createdAt=createdAt;draft.orderSuffix=suffix;Object.assign(draft.values,intakeValues(r,s,previous));draft.values.__images=combineImages(previous.__images||[],r.images||[]);draft.originalLayoutVersion=1;
- normalizeDraft(s,draft);draft.dueDate=r.fields.due?.value?normalizeDueDate(r.fields.due.value):previousDue;draft.dueRaw=r.fields.due?.value||'';initializeDueDate();draft.requirementId=r.id;activeReq=r.id;refreshOrderNumber();dirty=true;
+ draft=newDraft(s);draft.createdAt=createdAt;draft.orderSuffix=suffix;Object.assign(draft.values,intakeValues(r,s,previous));draft.values.__images=combineImages(previous.__images||[],r.images||[]);draft.originalLayoutVersion=1;
+ normalizeDraft(s,draft);initializeDueDate();draft.requirementId=r.id;activeReq=r.id;refreshOrderNumber();dirty=true;
 }
 
 function applyExtracted(extracted){if(!draft)return;let n=0;for(const f of template().fields)if(importable.has(f.key)&&extracted[f.key]){draft.values[f.id]=extracted[f.key];n++;}draft.reviewed=false;dirty=true;return n;}
@@ -113,16 +109,13 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden&&page==='c
 
 
 function initializeDueDate(){
- if(!draft||!template())return;
- const first=template().fields.find(f=>f.key==='quantity'),parts=splitQuantityDue(first?draft.values[first.id]:'');
- if(draft.defaultsVersion!==3){draft.dueDate=today();draft.dueRaw='';draft.defaultsVersion=3;}
- if(draft.dueDate===undefined)draft.dueDate=today();
- if(!draft.dueDate&&parts.rawDue)draft.dueDate=normalizeDueDate(parts.rawDue);
- draft.dueRaw=draft.dueDate?'':draft.dueRaw||parts.rawDue;
- syncDueDate();
+ if(!draft||!template()||draft.values.__inlineDue)return;
+ if(!Object.hasOwn(draft.values,'__dueDate'))draft.values.__dueDate=draft.dueDate??creationDate(draft.createdAt).replaceAll('/','-');
+ if(!Object.hasOwn(draft.values,'__dueRaw'))draft.values.__dueRaw=draft.dueRaw||'';
+ draft.values=prepareInlineDue(template(),draft.values);
 }
 function syncDueDate(manual=false){
- if(!draft||!template())return;
+ if(!draft||!template()||draft.values.__inlineDue)return;
  draft.values.__dueDate=draft.dueDate||'';draft.values.__dueRaw=draft.dueRaw||'';
  for(const f of template().fields.filter(f=>f.key==='quantity'))draft.values[f.id]=quantityWithDue(draft.values[f.id],draft.dueDate,draft.dueRaw);
  if(manual){

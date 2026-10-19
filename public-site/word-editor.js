@@ -1,5 +1,5 @@
 import {W,parseXml,textOf,exportDocx} from './core.js';
-import {quantityWithDue} from './due-date.js';
+import {dueTarget,fixedDelivery} from './inline-due.js';
 const escape=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
 function separatorPattern(text){return new RegExp(escape(text.trim()).replace(/\s+/g,'\\s*'));}
 function cellText(cell){const paragraphs=Array.from(cell.children).filter(n=>n.tagName==='P');return (paragraphs.length?paragraphs.map(p=>p.innerText).join('\n'):cell.innerText).replace(/\u00a0/g,' ').trim();}
@@ -25,8 +25,8 @@ export function createWordEditor(host,template,{getValues,getOrderNo,onChange,on
    await docx.renderAsync(await zip.generateAsync({type:'arraybuffer'}),renderBody,renderStyles,{className:'worddoc',inWrapper:true,ignoreWidth:false,ignoreHeight:false,ignoreFonts:false,breakPages:true,ignoreLastRenderedPageBreak:false,renderHeaders:true,renderFooters:true,renderFootnotes:true,renderEndnotes:true,renderAltChunks:false,useBase64URL:true,experimental:true});
    if(disposed||current!==revision||!host.isConnected)return;
    body.replaceChildren(...renderBody.childNodes);styles.replaceChildren(...renderStyles.childNodes);
-   for(const index of new Set(template.fields.map(f=>f.cell))){const cell=body.querySelector('#PurchaseCell'+index)?.closest('td');if(!cell)continue;const fields=template.fields.filter(f=>f.cell===index),editable=fields.some(f=>!['date','delivery'].includes(f.key));cell.contentEditable=String(editable);cell.spellcheck=false;cell.dataset.cell=String(index);cell.setAttribute('aria-label',fields.map(f=>f.label).join('／'));cell.setAttribute('role','textbox');cell.setAttribute('aria-multiline','true');const initial=cellText(cell);let valid=true;
-    cell.addEventListener('input',()=>{try{const changes=cellValues(fields,originals[index],cellText(cell));for(const f of fields){if(['date','delivery'].includes(f.key)){delete changes[f.id];continue;}if(f.key==='quantity')changes[f.id]=quantityWithDue(changes[f.id],getValues().__dueDate,getValues().__dueRaw);}valid=true;onChange(changes);}catch{valid=false;}});
+   for(const index of new Set(template.fields.map(f=>f.cell))){const cell=body.querySelector('#PurchaseCell'+index)?.closest('td');if(!cell)continue;const fields=template.fields.filter(f=>f.cell===index),target=dueTarget(template),editable=fields.some(f=>f.key!=='date'&&(f.key!=='delivery'||target?.id===f.id));cell.contentEditable=String(editable);cell.spellcheck=false;cell.dataset.cell=String(index);cell.setAttribute('aria-label',fields.map(f=>f.label).join('／'));cell.setAttribute('role','textbox');cell.setAttribute('aria-multiline','true');const initial=cellText(cell);let valid=true;
+    cell.addEventListener('input',()=>{try{const changes=cellValues(fields,originals[index],cellText(cell));for(const f of fields){if(f.key==='date'||f.key==='delivery'&&target?.id!==f.id){delete changes[f.id];continue;}if(f.key==='delivery')changes[f.id]=fixedDelivery(changes[f.id]);}valid=true;changes.__inlineDue=true;onChange(changes);}catch{valid=false;}});
     cell.addEventListener('paste',event=>{event.preventDefault();const text=event.clipboardData.getData('text/plain');document.execCommand('insertText',false,text);});
     cell.addEventListener('blur',()=>{if(!valid)onError('請保留同格的欄位名稱，內容已還原');if(cellText(cell)!==initial)refresh();});
    }

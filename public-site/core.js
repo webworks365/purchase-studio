@@ -56,6 +56,7 @@ function setCellText(cell,value){
  }
 }
 function originalLayoutValues(template,values){
+ if(values.__inlineDue)return {...values};
  const out={...values},quantity=template.fields.filter(f=>f.key==='quantity');
  const raw=values.__dueRaw||quantity.map(f=>splitQuantityDue(values[f.id]).rawDue).find(Boolean)||'';
  const date=Object.hasOwn(values,'__dueDate')?values.__dueDate:normalizeDueDate(raw),due=date?'交期：'+date.replaceAll('-','/'):(raw?(/^交期/.test(raw)?raw:'交期：'+raw):'');
@@ -66,6 +67,7 @@ function originalLayoutValues(template,values){
  if(target&&due){const base=out[target.id]??target.value,separator=target.value.match(/([\s]+)交期/)?.[1]||'\n';out[target.id]=/^\s*交期/.test(target.value)?due+'\n'+base:base+separator+due;}
  return out;
 }
+export function prepareInlineDue(template,values){return values.__inlineDue?{...values}:{...originalLayoutValues(template,values),__inlineDue:true};}
 export async function exportDocx(template,values,orderNo){
  const zip=await JSZip.loadAsync(template.data,{base64:true});const x=parseXml(await zip.file('word/document.xml').async('string'));
  const cells=Array.from(x.getElementsByTagNameNS(W,'tc'));
