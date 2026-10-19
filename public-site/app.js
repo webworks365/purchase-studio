@@ -1,3 +1,4 @@
+import {DELIVERY,creationDate,supplierDisplay,formRows,supplementalRows,normalizeDraft,intakeValues} from './order-layout.js';
 import {readRequirementDocx,readRequirementXlsx,readRequirementText,requirementMapping} from './requirements.js';
 import {normalizeDueDate,splitQuantityDue,quantityWithDue} from './due-date.js';
 import {orderPrefix,formatOrderNumber,validOrderNumber} from './order-number.js';
@@ -13,10 +14,10 @@ async function save(){return new Promise((res,rej)=>{const t=db.transaction('dat
 function download(blob,name){const a=document.createElement('a'),url=URL.createObjectURL(blob);a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),10000);}
 function bytes64(data){let s='';const a=new Uint8Array(data);for(let i=0;i<a.length;i+=16384)s+=String.fromCharCode(...a.subarray(i,i+16384));return btoa(s);}
 function template(){return state.suppliers.find(s=>s.id===selected);}
-function newDraft(s){const values={};for(const f of s.fields)values[f.id]=transactional.has(f.key)&&!['part','price'].includes(f.key)?(f.key==='date'?today().replaceAll('-','/'):''):f.value;return {id:uid(),supplierId:s.id,orderSuffix:'',orderNo:orderPrefix(),dueDate:'',dueRaw:'',values,createdAt:new Date().toISOString()};}
+function newDraft(s){const values={};for(const f of s.fields)values[f.id]=transactional.has(f.key)&&!['part','price'].includes(f.key)?(f.key==='date'?today().replaceAll('-','/'):''):f.value;const result={id:uid(),supplierId:s.id,orderSuffix:'',orderNo:orderPrefix(),dueDate:'',dueRaw:'',values,createdAt:new Date().toISOString()};normalizeDraft(s,result);return result;}
 function refreshOrderNumber(){if(!draft)return;draft.orderSuffix??=draft.orderNo?.match(/^MH\d{2}A-\d{2}-(\d{3})$/)?.[1]||'';const previous=draft.orderNo;draft.orderNo=formatOrderNumber(draft.orderSuffix);const prefix=$('#order-prefix');if(prefix)prefix.textContent=orderPrefix();const display=$('#order-full');if(display)display.textContent=draft.orderNo;}
 
-function activate(id){selected=id;state.lastSupplierId=id;const s=template();draft=s?structuredClone(state.drafts[id]||newDraft(s)):null;scan=null;dirty=false;activeReq=draft?.requirementId||null;if(draft&&s)for(const f of s.fields.filter(f=>['part','price'].includes(f.key)))if(!draft.values[f.id]?.trim())draft.values[f.id]=f.value;initializeDueDate();refreshOrderNumber();}
+function activate(id){selected=id;state.lastSupplierId=id;const s=template();draft=s?structuredClone(state.drafts[id]||newDraft(s)):null;scan=null;dirty=false;activeReq=draft?.requirementId||null;if(draft&&s)for(const f of s.fields.filter(f=>['part','price'].includes(f.key)))if(!draft.values[f.id]?.trim())draft.values[f.id]=f.value;if(draft&&s)normalizeDraft(s,draft);initializeDueDate();refreshOrderNumber();}
 function switchPage(p){page=p;for(const b of document.querySelectorAll('nav button'))b.classList.toggle('active',b.dataset.page===p);$('#breadcrumb').textContent=({create:'建立採購單',suppliers:'供應商與模板',history:'採購紀錄',settings:'開單資料與備份'})[p];render();}
 function render(){if(page==='create')renderCreate();if(page==='suppliers')renderSuppliers();if(page==='history')renderHistory();if(page==='settings')renderSettings();$('#supplier-count').textContent=state.suppliers.length;}
 function title(eyebrow,h,sub,action=''){return `<div class="title-line"><div><div class="eyebrow">${eyebrow}</div><h1>${h}</h1><p class="sub">${sub}</p></div>${action}</div>`;}
@@ -24,23 +25,23 @@ function card(n,title,body,tag=''){return `<div class="card"><div class="card-he
 function field(f){
  const names={customerPart:'客戶料號',part:'銘星料號',quantity:'數量',price:'單價／總額',date:'訂購日期',delivery:'交貨地點',payment:'付款條件',material:'材料／板厚',copper:'銅厚',mask:'防焊／文字',finish:'表面處理',notes:'備註',notesTail:'包裝／附件'};
  const label=f.key==='quantity'?'數量':f.label,value=f.key==='quantity'?splitQuantityDue(draft.values[f.id]).quantity:(draft.values[f.id]??''),full=value.length>45||['quantity','price','notes','notesTail','production','material','mask','inspection'].includes(f.key);
- return '<label class="field '+(full?'full':'')+'">'+esc(label)+(full?'<textarea data-field="'+esc(f.id)+'" rows="'+(value.length>170?5:2)+'">'+esc(value)+'</textarea>':'<input data-field="'+esc(f.id)+'" value="'+esc(value)+'">')+'</label>'+(f.key==='quantity'?'<label class="field full due-field">交期<input type="date" id="due-date" aria-label="交期" value="'+esc(draft.dueDate||'')+'">'+(!draft.dueDate&&draft.dueRaw?'<small class="hint">原交期：'+esc(draft.dueRaw)+'</small>':'')+'</label>':'');
+ return '<label class="field '+(full?'full':'')+'">'+esc(label)+(full?'<textarea data-field="'+esc(f.id)+'" rows="'+(value.length>170?5:2)+'">'+esc(value)+'</textarea>':'<input data-field="'+esc(f.id)+'" '+(['date','delivery'].includes(f.key)?'readonly aria-readonly="true" ':'')+'value="'+esc(value)+'">')+'</label>'+(f.key==='quantity'?'<label class="field full due-field">交期<input type="date" id="due-date" aria-label="交期" value="'+esc(draft.dueDate||'')+'">'+(!draft.dueDate&&draft.dueRaw?'<small class="hint">原交期：'+esc(draft.dueRaw)+'</small>':'')+'</label>':'');
 }
 function renderCreate(){
  const s=template();refreshOrderNumber();
  app.innerHTML=title('','採購單','','<div class="actions order-actions"><button id="new-order">＋ 新增</button><button id="save-draft" '+(s?'':'disabled')+'>存草稿</button><button id="export-word" class="primary" '+(s?'':'disabled')+'>下載 Word</button></div>')+
  `<div class="order-workspace"><div class="card"><div class="card-body">
  ${!s?'<div class="message onboarding">先新增供應商模板，或到「設定與備份」還原資料。</div>':''}
- <div class="order-setup"><div class="entry-top"><label class="field">供應商<select id="supplier-select" aria-label="供應商">${state.suppliers.map(t=>'<option value="'+t.id+'" '+(t.id===selected?'selected':'')+'>'+esc(t.short)+'</option>').join('')}</select></label><button class="text small" id="manage-templates">模板設定</button></div><label class="field order-field">訂單號碼<div class="order-number"><span id="order-prefix">${orderPrefix()}</span><input id="order-suffix" inputmode="numeric" maxlength="3" aria-label="自訂三位數編號" placeholder="035" value="${esc(draft?.orderSuffix||'')}" ${s?'':'disabled'}></div></label></div>
+ <div class="order-setup"><div class="entry-top"><label class="field">供應商<select id="supplier-select" aria-label="供應商">${state.suppliers.map(t=>'<option value="'+t.id+'" '+(t.id===selected?'selected':'')+'>'+esc(supplierDisplay(t))+'</option>').join('')}</select></label><button class="text small" id="manage-templates">模板設定</button></div><label class="field order-field">訂單號碼<div class="order-number"><span id="order-prefix">${orderPrefix()}</span><input id="order-suffix" inputmode="numeric" maxlength="3" aria-label="自訂三位數編號" placeholder="035" value="${esc(draft?.orderSuffix||'')}" ${s?'':'disabled'}></div></label></div>
  <label class="drop" id="drop-zone"><input id="source-file" type="file" aria-label="上傳客戶需求" accept=".docx,.xlsx,.pdf,.png,.jpg,.jpeg,.webp,.txt" ${s?'':'disabled'}><strong>＋ 上傳需求</strong><small>Word、Excel、PDF、圖片</small></label><div id="scan-status" class="scan-info" role="status">${scan?esc(scan.message):''}</div>
  </div></div>
- ${s?'<div class="card order-fields"><div class="card-body">'+s.rows.map(row=>'<div class="word-form-row '+(row.length===1?'single':'')+'">'+row.map(c=>{const f=s.fields.find(f=>f.id===c.id);return f?(f.key==='quantity'?'<div class="quantity-cell">'+field(f)+'</div>':field(f)):c.text?'<p class="word-static">'+esc(c.text)+'</p>':'';}).join('')+'</div>').join('')+'</div></div>':''}
+ ${s?'<div class="card order-fields"><div class="card-body">'+formRows(s).map(row=>'<div class="word-form-row '+(row.length===1?'single':'')+'">'+row.map(c=>{const f=s.fields.find(f=>f.id===c.id);return f?(f.key==='quantity'?'<div class="quantity-cell">'+field(f)+'</div>':field(f)):c.text?'<p class="word-static">'+esc(c.text)+'</p>':'';}).join('')+'</div>').join('')+'</div></div>':''}
  <div id="order-attachments"></div>
  <section class="card"><div class="card-body"><label class="field">貼上需求文字<textarea id="paste-text" class="source-text" rows="3">${esc(scan?.text||'')}</textarea></label><button id="parse-text" class="small">套入</button></div></section>
  </div>`;
  bindCreate();renderAttachmentFields();expandOrderText();
 }
-function renderAttachmentFields(){const el=$('#order-attachments');if(!el)return;const rows=draft?.values.__requirementAppendix||[];el.innerHTML=rows.length?'<section class="card"><div class="card-head"><h2>客戶需求附件</h2></div><div class="card-body">'+rows.map((f,i)=>'<label class="field full attachment-field">'+esc(f.label)+(['需求交期','交期'].includes(f.label)?'<span class="attachment-date">'+esc(f.value)+'</span>':'<textarea rows="'+Math.max(2,Math.min(8,Math.ceil(f.value.length/70)))+'" data-annex="'+i+'">'+esc(f.value)+'</textarea>')+'</label>').join('')+'</div></section>':'';for(const input of el.querySelectorAll('[data-annex]'))input.oninput=()=>{draft.values.__requirementAppendix[Number(input.dataset.annex)].value=input.value;dirty=true;expandOrderText();};}
+function renderAttachmentFields(){const el=$('#order-attachments');if(!el)return;const rows=draft&&template()?supplementalRows(template(),draft.values):[];el.innerHTML=rows.length?'<section class="card"><div class="card-head"><h2>補充需求</h2></div><div class="card-body">'+rows.map((f,i)=>'<label class="field full attachment-field">'+esc(f.label)+(['需求交期','交期'].includes(f.label)?'<span class="attachment-date">'+esc(f.value)+'</span>':'<textarea rows="'+Math.max(2,Math.min(8,Math.ceil(f.value.length/70)))+'" data-annex="'+draft.values.__requirementAppendix.indexOf(f)+'">'+esc(f.value)+'</textarea>')+'</label>').join('')+'</div></section>':'';for(const input of el.querySelectorAll('[data-annex]'))input.oninput=()=>{draft.values.__requirementAppendix[Number(input.dataset.annex)].value=input.value;dirty=true;expandOrderText();};}
 
 function bindCreate(){
  $('#source-file').onchange=e=>processFiles(e.target.files);
@@ -57,7 +58,9 @@ function bindCreate(){
  $('#export-word').onclick=()=>generate();
 }
 function applySimpleRequirement(r,suffix=draft?.orderSuffix||''){
- const s=template();if(!s)return;const priorPart=Object.fromEntries(s.fields.filter(f=>f.key==='part').map(f=>[f.id,draft?.values[f.id]||f.value]));const priorPrice=Object.fromEntries(s.fields.filter(f=>f.key==='price').map(f=>[f.id,draft?.values[f.id]||f.value]));draft=newDraft(s);draft.orderSuffix=suffix;const mapped=requirementMapping(r,s);Object.assign(mapped,priorPrice);if(!r.fields.internalPart?.value)for(const [id,value]of Object.entries(priorPart))mapped[id]=value;for(const f of s.fields){if(f.key==='production')mapped[f.id]='依本採購單客戶需求附件及客戶提供之製作檔案執行。';if(['notes','notesTail'].includes(f.key)&&mapped[f.id])mapped[f.id]='依本採購單客戶需求附件及本次交付條款。';}Object.assign(draft.values,mapped);draft.dueDate=normalizeDueDate(r.fields.due?.value||'');draft.dueRaw=r.fields.due?.value||'';initializeDueDate();draft.requirementId=r.id;activeReq=r.id;refreshOrderNumber();dirty=true;
+ const s=template();if(!s)return;const previous=draft?.values||{},createdAt=draft?.createdAt||new Date().toISOString();
+ draft=newDraft(s);draft.createdAt=createdAt;draft.orderSuffix=suffix;Object.assign(draft.values,intakeValues(r,s,previous));draft.originalLayoutVersion=1;
+ normalizeDraft(s,draft);draft.dueDate=normalizeDueDate(r.fields.due?.value||'');draft.dueRaw=r.fields.due?.value||'';initializeDueDate();draft.requirementId=r.id;activeReq=r.id;refreshOrderNumber();dirty=true;
 }
 
 function applyExtracted(extracted){if(!draft)return;let n=0;for(const f of template().fields)if(importable.has(f.key)&&extracted[f.key]){draft.values[f.id]=extracted[f.key];n++;}draft.reviewed=false;dirty=true;return n;}
@@ -84,7 +87,7 @@ async function processFile(file){
  }catch(e){status('分析未完成：'+e.message);toast('分析未完成：'+e.message);}finally{busy=false;document.body.classList.remove('busy');}
 }
 
-function validate(){if(!draft)return false;syncDueDate();refreshOrderNumber();if(!validOrderNumber(draft.orderNo)){toast('請填寫最後三碼編號，例如 035');$('#order-suffix')?.focus();return false;}if(state.orders.some(o=>o.id!==draft.id&&o.orderNo===draft.orderNo)){toast('此訂單號碼已存在，請修改最後三碼');return false;}return true;}
+function validate(){if(!draft)return false;normalizeDraft(template(),draft);syncDueDate();refreshOrderNumber();if(!validOrderNumber(draft.orderNo)){toast('請填寫最後三碼編號，例如 035');$('#order-suffix')?.focus();return false;}if(state.orders.some(o=>o.id!==draft.id&&o.orderNo===draft.orderNo)){toast('此訂單號碼已存在，請修改最後三碼');return false;}return true;}
 
 async function generate(){if(busy||!validate())return;busy=true;$('#export-word').disabled=true;try{const s=template();const blob=await exportDocx(s,draft.values,draft.orderNo);const record={...structuredClone(draft),savedAt:new Date().toISOString(),supplierName:s.name,templateSnapshot:structuredClone(s)};state.orders=state.orders.filter(o=>o.id!==draft.id);state.orders.unshift(record);state.drafts[selected]=structuredClone(draft);await save();download(blob,safeFile(draft.orderNo+'_'+s.short)+'採購單.docx');dirty=false;toast('Word 採購單已匯出，並儲存採購紀錄');}catch(e){toast('匯出失敗：'+e.message);}finally{busy=false;const b=$('#export-word');if(b)b.disabled=false;}}
 function renderSuppliers(){app.innerHTML=title('SUPPLIERS & TEMPLATES','供應商與模板','每家供應商擁有自己的 Word 版型、付款條件與採購紀錄。','<button class="primary" id="add-supplier">＋ 新增供應商模板</button>')+`<div class="message" style="margin-bottom:22px">請上傳各供應商的 Word 模板，或從「開單資料與備份」還原原本備份。模板與採購紀錄只保存在目前瀏覽器。</div><div class="supplier-grid">${state.suppliers.map(s=>`<article class="supplier-card"><div style="display:flex;justify-content:space-between"><div class="avatar">${esc(s.short[0])}</div><span class="badge">專屬 Word 模板</span></div><h3>${esc(s.short)}</h3><p>${esc(s.name)}<br>${esc(s.filename)}</p><div class="actions"><button class="primary" data-use="${s.id}">建立採購單</button><button data-edit="${s.id}">編輯模板</button></div><div style="display:flex;justify-content:space-between;margin-top:12px"><button class="text small" data-original="${s.id}">下載模板原檔 ↗</button><button class="text small danger" data-delete="${s.id}">刪除</button></div></article>`).join('')}</div>`;
@@ -118,6 +121,7 @@ function initializeDueDate(){
 }
 function syncDueDate(manual=false){
  if(!draft||!template())return;
+ draft.values.__dueDate=draft.dueDate||'';draft.values.__dueRaw=draft.dueRaw||'';
  for(const f of template().fields.filter(f=>f.key==='quantity'))draft.values[f.id]=quantityWithDue(draft.values[f.id],draft.dueDate,draft.dueRaw);
  if(manual){
   const rows=draft.values.__requirementAppendix||[],filtered=rows.filter(r=>!['需求交期','交期'].includes(r.label));

@@ -1,3 +1,4 @@
+import {normalizeDueDate,splitQuantityDue} from './due-date.js';
 export const W='http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 export const labels=[['item',/^項目/],['date',/^訂購時間|^訂購日期/],['customerPart',/^客戶料號/],['part',/料號$/],['quantity',/^訂購數量|^數量/],['delivery',/^交貨地點/],['payment',/^付款方式/],['supplier',/^廠商名稱|^供應商/],['supplierAddress',/^廠商地址/],['contact',/^聯絡人/],['phone',/^電話/],['email',/^EM$|^EMAIL$/i],['production',/^製作內容/],['material',/^材料板厚|^材料規格/],['copper',/^銅厚/],['mask',/^防焊/],['finish',/^表面處理/],['inspection',/^檢驗標準/],['ul',/^UL\s*MARK/i],['notes',/^備註/],['maker',/^製表者/]];
 export const transactional=new Set(['date','customerPart','part','quantity','price']);
@@ -23,26 +24,41 @@ export function parseDocument(xml){
 }
 export async function parseDocx(data){const zip=await JSZip.loadAsync(data);const e=zip.file('word/document.xml');if(!e)throw Error('檔案不是有效的 DOCX，請使用 Word .docx 格式');const xml=await e.async('string');return {...parseDocument(xml),xml};}
 function setCellText(cell,value){
- let p=Array.from(cell.children).find(n=>n.localName==='p');if(!p){p=cell.ownerDocument.createElementNS(W,'w:p');cell.appendChild(p);}
- const pr=p.getElementsByTagNameNS(W,'pPr')[0]?.cloneNode(true),rp=p.getElementsByTagNameNS(W,'rPr')[0]?.cloneNode(true);
- for(const n of Array.from(cell.children))if(n.localName!=='tcPr')cell.removeChild(n);
- const doc=cell.ownerDocument;for(const line of String(value).split('\n')){const np=doc.createElementNS(W,'w:p');if(pr)np.appendChild(pr.cloneNode(true));const r=doc.createElementNS(W,'w:r');if(rp)r.appendChild(rp.cloneNode(true));const t=doc.createElementNS(W,'w:t');t.setAttribute('xml:space','preserve');t.textContent=line;r.appendChild(t);np.appendChild(r);cell.appendChild(np);}
+ // Keep the original paragraphs, runs, style properties, tabs and pictures.
+ // Only text nodes change; additional text lines use breaks within an existing run.
+ const doc=cell.ownerDocument,paragraphs=Array.from(cell.children).filter(n=>n.localName==='p'),lines=String(value).split('\n');
+ if(!paragraphs.length)return;
+ const nearestP=n=>{let p=n.parentNode;while(p&&!(p.namespaceURI===W&&p.localName==='p'))p=p.parentNode;return p;};
+ for(let i=0;i<paragraphs.length;i++){
+  const p=paragraphs[i],text=i===paragraphs.length-1?lines.slice(i).join('\n'):(lines[i]||'');
+  let nodes=Array.from(p.getElementsByTagNameNS(W,'t')).filter(t=>nearestP(t)===p);
+  if(!nodes.length){if(!text)continue;let r=Array.from(p.children).find(n=>n.localName==='r');if(!r){r=doc.createElementNS(W,'w:r');p.appendChild(r);}const t=doc.createElementNS(W,'w:t');r.appendChild(t);nodes=[t];}
+  let remaining=Array.from(text);
+  for(let j=0;j<nodes.length;j++){
+   const t=nodes[j],length=j===nodes.length-1?remaining.length:Array.from(t.textContent).length,chunk=remaining.splice(0,length).join(''),pieces=chunk.split('\n');
+   t.textContent=pieces[0];t.setAttribute('xml:space','preserve');let cursor=t;
+   for(const piece of pieces.slice(1)){const br=doc.createElementNS(W,'w:br'),next=doc.createElementNS(W,'w:t');next.setAttribute('xml:space','preserve');next.textContent=piece;cursor.parentNode.insertBefore(br,cursor.nextSibling);br.parentNode.insertBefore(next,br.nextSibling);cursor=next;}
+  }
+ }
+}
+function originalLayoutValues(template,values){
+ const out={...values},quantity=template.fields.filter(f=>f.key==='quantity');
+ const raw=values.__dueRaw||quantity.map(f=>splitQuantityDue(values[f.id]).rawDue).find(Boolean)||'';
+ const date=Object.hasOwn(values,'__dueDate')?values.__dueDate:normalizeDueDate(raw),due=date?'交期：'+date.replaceAll('-','/'):(raw?(/^交期/.test(raw)?raw:'交期：'+raw):'');
+ for(const f of quantity)if(values[f.id]!==undefined)out[f.id]=splitQuantityDue(values[f.id]).quantity;
+ for(const f of template.fields.filter(f=>f.key==='delivery'))out[f.id]='銘星科技有限公司';
+ const target=template.fields.find(f=>['quantity','delivery'].includes(f.key)&&/交期/.test(f.value))||quantity[0];
+ if(target&&due){const base=out[target.id]??target.value,separator=target.value.match(/([\s]+)交期/)?.[1]||'\n';out[target.id]=/^\s*交期/.test(target.value)?due+'\n'+base:base+separator+due;}
+ return out;
 }
 export async function exportDocx(template,values,orderNo){
  const zip=await JSZip.loadAsync(template.data,{base64:true});const x=parseXml(await zip.file('word/document.xml').async('string'));
  const cells=Array.from(x.getElementsByTagNameNS(W,'tc'));
- for(const f of template.fields){if(cells[f.cell]&&values[f.id]!==undefined&&textOf(cells[f.cell])!==values[f.id])setCellText(cells[f.cell],values[f.id]);}
+ const filled=originalLayoutValues(template,values);
+ for(const f of template.fields){if(cells[f.cell]&&filled[f.id]!==undefined&&textOf(cells[f.cell])!==filled[f.id])setCellText(cells[f.cell],filled[f.id]);}
  // Order number may span Word runs. Rebuild only its paragraph when changed.
  for(const p of Array.from(x.getElementsByTagNameNS(W,'p'))){const ts=Array.from(p.getElementsByTagNameNS(W,'t')),s=ts.map(t=>t.textContent).join('');if(/訂單號碼\s*[:：]/.test(s)&&ts.length){ts[0].textContent=s.replace(/(訂單號碼\s*[:：]\s*)[^\s\n]+/,(_,label)=>label+orderNo);for(const t of ts.slice(1))t.textContent='';}}
- if(Array.isArray(values.__requirementAppendix)&&values.__requirementAppendix.length){
-  const body=x.getElementsByTagNameNS(W,'body')[0],end=Array.from(body.children).find(n=>n.localName==='sectPr');
-  const addP=(text,{pageBreak=false,bold=false}={})=>{const p=x.createElementNS(W,'w:p'),r=x.createElementNS(W,'w:r');if(bold){const pr=x.createElementNS(W,'w:rPr');pr.appendChild(x.createElementNS(W,'w:b'));r.appendChild(pr);}if(pageBreak){const br=x.createElementNS(W,'w:br');br.setAttributeNS(W,'w:type','page');r.appendChild(br);}const t=x.createElementNS(W,'w:t');t.textContent=text;r.appendChild(t);p.appendChild(r);body.insertBefore(p,end||null);};
-  addP('客戶製作要求（訂單附件）',{pageBreak:true,bold:true});addP('對應訂單：'+orderNo);
-  for(const row of values.__requirementAppendix){addP(row.label,{bold:true});for(const line of row.value.split('\n'))addP(line);addP('確認來源：'+row.source);}
- }
  zip.file('word/document.xml',new XMLSerializer().serializeToString(x));
- // Remove comments, tracked revision authors and document personal properties from generated copy.
- if(zip.file('docProps/core.xml')){const meta=parseXml(await zip.file('docProps/core.xml').async('string'));for(const n of Array.from(meta.getElementsByTagName('*')))if(['creator','lastModifiedBy'].includes(n.localName))n.textContent='';zip.file('docProps/core.xml',new XMLSerializer().serializeToString(meta));}
  return zip.generateAsync({type:'blob',compression:'DEFLATE',mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'});
 }
 export function extractLoose(text){
