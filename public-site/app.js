@@ -13,53 +13,51 @@ async function save(){return new Promise((res,rej)=>{const t=db.transaction('dat
 function download(blob,name){const a=document.createElement('a'),url=URL.createObjectURL(blob);a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),10000);}
 function bytes64(data){let s='';const a=new Uint8Array(data);for(let i=0;i<a.length;i+=16384)s+=String.fromCharCode(...a.subarray(i,i+16384));return btoa(s);}
 function template(){return state.suppliers.find(s=>s.id===selected);}
-function newDraft(s){const values={};for(const f of s.fields)values[f.id]=transactional.has(f.key)&&f.key!=='part'?(f.key==='date'?today().replaceAll('-','/'):''):f.value;return {id:uid(),supplierId:s.id,orderSuffix:'',orderNo:orderPrefix(),dueDate:'',dueRaw:'',values,createdAt:new Date().toISOString()};}
-function refreshOrderNumber(){if(!draft)return;draft.orderSuffix??=draft.orderNo?.match(/^MH\d{2}A-\d{2}-(\d{3})$/)?.[1]||'';const previous=draft.orderNo;draft.orderNo=formatOrderNumber(draft.orderSuffix);const prefix=$('#order-prefix');if(prefix)prefix.textContent=orderPrefix();const display=$('#order-full');if(display)display.textContent=draft.orderNo;if(previous!==draft.orderNo)renderPreview();}
+function newDraft(s){const values={};for(const f of s.fields)values[f.id]=transactional.has(f.key)&&!['part','price'].includes(f.key)?(f.key==='date'?today().replaceAll('-','/'):''):f.value;return {id:uid(),supplierId:s.id,orderSuffix:'',orderNo:orderPrefix(),dueDate:'',dueRaw:'',values,createdAt:new Date().toISOString()};}
+function refreshOrderNumber(){if(!draft)return;draft.orderSuffix??=draft.orderNo?.match(/^MH\d{2}A-\d{2}-(\d{3})$/)?.[1]||'';const previous=draft.orderNo;draft.orderNo=formatOrderNumber(draft.orderSuffix);const prefix=$('#order-prefix');if(prefix)prefix.textContent=orderPrefix();const display=$('#order-full');if(display)display.textContent=draft.orderNo;}
 
-function activate(id){selected=id;state.lastSupplierId=id;const s=template();draft=s?structuredClone(state.drafts[id]||newDraft(s)):null;scan=null;dirty=false;activeReq=draft?.requirementId||null;if(draft&&s)for(const f of s.fields.filter(f=>f.key==='part'))if(!draft.values[f.id]?.trim())draft.values[f.id]=f.value;initializeDueDate();refreshOrderNumber();}
+function activate(id){selected=id;state.lastSupplierId=id;const s=template();draft=s?structuredClone(state.drafts[id]||newDraft(s)):null;scan=null;dirty=false;activeReq=draft?.requirementId||null;if(draft&&s)for(const f of s.fields.filter(f=>['part','price'].includes(f.key)))if(!draft.values[f.id]?.trim())draft.values[f.id]=f.value;initializeDueDate();refreshOrderNumber();}
 function switchPage(p){page=p;for(const b of document.querySelectorAll('nav button'))b.classList.toggle('active',b.dataset.page===p);$('#breadcrumb').textContent=({create:'建立採購單',suppliers:'供應商與模板',history:'採購紀錄',settings:'開單資料與備份'})[p];render();}
 function render(){if(page==='create')renderCreate();if(page==='suppliers')renderSuppliers();if(page==='history')renderHistory();if(page==='settings')renderSettings();$('#supplier-count').textContent=state.suppliers.length;}
 function title(eyebrow,h,sub,action=''){return `<div class="title-line"><div><div class="eyebrow">${eyebrow}</div><h1>${h}</h1><p class="sub">${sub}</p></div>${action}</div>`;}
 function card(n,title,body,tag=''){return `<div class="card"><div class="card-head"><h2><span class="number">${n}</span>${title}</h2>${tag?`<span class="pill">${tag}</span>`:''}</div><div class="card-body">${body}</div></div>`;}
 function field(f){
  const names={customerPart:'客戶料號',part:'銘星料號',quantity:'數量',price:'單價／總額',date:'訂購日期',delivery:'交貨地點',payment:'付款條件',material:'材料／板厚',copper:'銅厚',mask:'防焊／文字',finish:'表面處理',notes:'備註',notesTail:'包裝／附件'};
- const label=names[f.key]||f.label,value=f.key==='quantity'?splitQuantityDue(draft.values[f.id]).quantity:(draft.values[f.id]??''),full=value.length>45||['quantity','price','notes','notesTail','production','material','mask','inspection'].includes(f.key);
+ const label=f.key==='quantity'?'數量':f.label,value=f.key==='quantity'?splitQuantityDue(draft.values[f.id]).quantity:(draft.values[f.id]??''),full=value.length>45||['quantity','price','notes','notesTail','production','material','mask','inspection'].includes(f.key);
  return '<label class="field '+(full?'full':'')+'">'+esc(label)+(full?'<textarea data-field="'+esc(f.id)+'" rows="'+(value.length>170?5:2)+'">'+esc(value)+'</textarea>':'<input data-field="'+esc(f.id)+'" value="'+esc(value)+'">')+'</label>'+(f.key==='quantity'?'<label class="field full due-field">交期<input type="date" id="due-date" aria-label="交期" value="'+esc(draft.dueDate||'')+'">'+(!draft.dueDate&&draft.dueRaw?'<small class="hint">原交期：'+esc(draft.dueRaw)+'</small>':'')+'</label>':'');
 }
 function renderCreate(){
- const s=template();refreshOrderNumber();const primary=['customerPart','part','quantity','price','payment'];
- app.innerHTML=title('','採購單','','<button id="new-order">＋ 新增</button>')+
- `<div class="editor-grid simple-layout"><section class="entry-panel"><div class="card"><div class="card-body">
+ const s=template();refreshOrderNumber();
+ app.innerHTML=title('','採購單','','<div class="actions order-actions"><button id="new-order">＋ 新增</button><button id="save-draft" '+(s?'':'disabled')+'>存草稿</button><button id="export-word" class="primary" '+(s?'':'disabled')+'>下載 Word</button></div>')+
+ `<div class="order-workspace"><div class="card"><div class="card-body">
  ${!s?'<div class="message onboarding">先新增供應商模板，或到「設定與備份」還原資料。</div>':''}
- <div class="entry-top"><label class="field">供應商<select id="supplier-select" aria-label="供應商">${state.suppliers.map(t=>'<option value="'+t.id+'" '+(t.id===selected?'selected':'')+'>'+esc(t.short)+'</option>').join('')}</select></label><button class="text small" id="manage-templates">模板設定</button></div>
- <label class="field order-field">訂單號碼<div class="order-number"><span id="order-prefix">${orderPrefix()}</span><input id="order-suffix" inputmode="numeric" maxlength="3" pattern="[0-9]{1,3}" aria-label="自訂三位數編號" placeholder="035" value="${esc(draft?.orderSuffix||'')}" ${s?'':'disabled'}></div></label>
- <label class="drop" id="drop-zone"><input id="source-file" type="file" aria-label="上傳客戶需求" accept=".docx,.xlsx,.pdf,.png,.jpg,.jpeg,.webp,.txt" ${s?'':'disabled'}><strong>＋ 上傳需求</strong><small>Word、Excel、PDF、圖片</small></label>
- <div id="scan-status" class="scan-info" role="status">${scan?esc(scan.message):''}</div>
- ${s?'<div class="section-label">訂購資料</div><div class="form-grid">'+primary.flatMap(k=>s.fields.filter(f=>f.key===k)).map(field).join('')+'</div><details class="secondary-fields"><summary>日期與交貨資料</summary><div class="form-grid">'+s.fields.filter(f=>['date','delivery'].includes(f.key)).map(field).join('')+'</div></details><details class="secondary-fields"><summary>製作規格</summary><div class="form-grid">'+s.fields.filter(f=>!primary.includes(f.key)&&!['date','delivery','supplier','contact','phone','email','supplierAddress','maker','signature','notes','notesTail'].includes(f.key)).map(field).join('')+'</div></details><details class="secondary-fields"><summary>備註與包裝</summary><div class="form-grid">'+s.fields.filter(f=>['notes','notesTail'].includes(f.key)).map(field).join('')+'</div></details><details class="secondary-fields"><summary>聯絡資料</summary><div class="form-grid">'+s.fields.filter(f=>['supplier','contact','phone','email','supplierAddress','maker'].includes(f.key)).map(field).join('')+'</div></details>':''}
- <details class="paste-option"><summary>貼上文字</summary><textarea id="paste-text" class="source-text" aria-label="客戶需求文字">${esc(scan?.text||'')}</textarea><button class="small" id="parse-text">套入</button></details>
- </div></div></section>
- <section class="preview-panel"><div class="preview-toolbar"><strong>採購單預覽</strong><div class="actions"><button id="save-draft" ${s?'':'disabled'}>存草稿</button><button id="print-order" ${s?'':'disabled'}>列印</button><button id="export-word" class="primary" ${s?'':'disabled'}>下載 Word</button></div></div><div class="paper-wrap"><div class="paper" id="preview"></div></div></section></div>`;
- renderPreview();bindCreate();
+ <div class="order-setup"><div class="entry-top"><label class="field">供應商<select id="supplier-select" aria-label="供應商">${state.suppliers.map(t=>'<option value="'+t.id+'" '+(t.id===selected?'selected':'')+'>'+esc(t.short)+'</option>').join('')}</select></label><button class="text small" id="manage-templates">模板設定</button></div><label class="field order-field">訂單號碼<div class="order-number"><span id="order-prefix">${orderPrefix()}</span><input id="order-suffix" inputmode="numeric" maxlength="3" aria-label="自訂三位數編號" placeholder="035" value="${esc(draft?.orderSuffix||'')}" ${s?'':'disabled'}></div></label></div>
+ <label class="drop" id="drop-zone"><input id="source-file" type="file" aria-label="上傳客戶需求" accept=".docx,.xlsx,.pdf,.png,.jpg,.jpeg,.webp,.txt" ${s?'':'disabled'}><strong>＋ 上傳需求</strong><small>Word、Excel、PDF、圖片</small></label><div id="scan-status" class="scan-info" role="status">${scan?esc(scan.message):''}</div>
+ </div></div>
+ ${s?'<div class="card order-fields"><div class="card-body">'+s.rows.map(row=>'<div class="word-form-row '+(row.length===1?'single':'')+'">'+row.map(c=>{const f=s.fields.find(f=>f.id===c.id);return f?(f.key==='quantity'?'<div class="quantity-cell">'+field(f)+'</div>':field(f)):c.text?'<p class="word-static">'+esc(c.text)+'</p>':'';}).join('')+'</div>').join('')+'</div></div>':''}
+ <div id="order-attachments"></div>
+ <section class="card"><div class="card-body"><label class="field">貼上需求文字<textarea id="paste-text" class="source-text" rows="3">${esc(scan?.text||'')}</textarea></label><button id="parse-text" class="small">套入</button></div></section>
+ </div>`;
+ bindCreate();renderAttachmentFields();expandOrderText();
 }
+function renderAttachmentFields(){const el=$('#order-attachments');if(!el)return;const rows=draft?.values.__requirementAppendix||[];el.innerHTML=rows.length?'<section class="card"><div class="card-head"><h2>客戶需求附件</h2></div><div class="card-body">'+rows.map((f,i)=>'<label class="field full attachment-field">'+esc(f.label)+(['需求交期','交期'].includes(f.label)?'<span class="attachment-date">'+esc(f.value)+'</span>':'<textarea rows="'+Math.max(2,Math.min(8,Math.ceil(f.value.length/70)))+'" data-annex="'+i+'">'+esc(f.value)+'</textarea>')+'</label>').join('')+'</div></section>':'';for(const input of el.querySelectorAll('[data-annex]'))input.oninput=()=>{draft.values.__requirementAppendix[Number(input.dataset.annex)].value=input.value;dirty=true;expandOrderText();};}
 
-function renderPreview(){const el=$('#preview');if(!el)return;const s=template();if(!s||!draft){el.innerHTML='<div class="empty">新增供應商後，採購單將顯示在這裡。</div>';return;}const company=state.company;
-el.innerHTML=`<div class="paper-top"><div><h2>採 購 單</h2><small>PURCHASE ORDER</small></div><div class="po">${esc(company.name)}<br><br>${esc(draft.orderNo)}</div></div><p class="paper-meta">${esc(company.address)}<br>電話 ${esc(company.phone)}　統編 ${esc(company.taxId)}</p><table>${s.rows.map(row=>'<tr>'+row.map(c=>c.id?`<td class="label">${esc(c.label)}</td><td>${esc(draft.values[c.id]||'—')}</td>`:`<td colspan="2">${esc(c.text)}</td>`).join('')+'</tr>').join('')}</table>${draft.values.__requirementAppendix?.length?'<details class="requirement-preview"><summary>客戶需求附件</summary>'+draft.values.__requirementAppendix.map(f=>'<p><strong>'+esc(f.label)+'</strong><br>'+esc(f.value)+'</p>').join('')+'</details>':''}<div class="paper-sign"><span>製表</span><span>核准</span><span>供應商回簽</span></div>`;}
 function bindCreate(){
  $('#source-file').onchange=e=>processFiles(e.target.files);
  const drop=$('#drop-zone');drop.ondragover=e=>{e.preventDefault();drop.classList.add('drag');};drop.ondragleave=()=>drop.classList.remove('drag');drop.ondrop=e=>{e.preventDefault();drop.classList.remove('drag');processFiles(e.dataTransfer.files);};
  $('#supplier-select').onchange=async e=>{if(busy){e.target.value=selected;return;}const id=e.target.value;if(id===selected)return;const source=scan,r=state.requirements?.find(r=>r.id===activeReq),suffix=draft?.orderSuffix||'',due=draft?.dueDate||'',dueRaw=draft?.dueRaw||'';if(draft&&dirty){state.drafts[selected]=structuredClone(draft);try{await save();}catch(err){toast('儲存失敗：'+err.message);e.target.value=selected;return;}}activate(id);scan=source;if(r){applySimpleRequirement(r,suffix);draft.dueDate=due;draft.dueRaw=dueRaw;syncDueDate(!!due||!dueRaw);}renderCreate();};
  $('#manage-templates').onclick=()=>switchPage('suppliers');
  $('#new-order').onclick=()=>{if(busy)return;if(dirty&&!confirm('目前修改尚未儲存，確定建立新單？'))return;const s=template();if(s){draft=newDraft(s);activeReq=null;scan=null;dirty=false;renderCreate();}};
- for(const input of document.querySelectorAll('[data-field]'))input.oninput=()=>{const f=template().fields.find(f=>f.id===input.dataset.field);draft.values[input.dataset.field]=f?.key==='quantity'?quantityWithDue(input.value,draft.dueDate,draft.dueRaw):input.value;dirty=true;renderPreview();};
- $('#due-date')?.addEventListener('change',e=>{draft.dueDate=normalizeDueDate(e.target.value);draft.dueRaw='';syncDueDate(true);dirty=true;renderPreview();});
- $('#order-suffix')?.addEventListener('input',e=>{if(!draft)return;e.target.value=e.target.value.replace(/[^0-9]/g,'').slice(0,3);draft.orderSuffix=e.target.value;dirty=true;refreshOrderNumber();renderPreview();});
- $('#order-suffix')?.addEventListener('blur',e=>{if(!draft)return;if(e.target.value)e.target.value=e.target.value.padStart(3,'0');draft.orderSuffix=e.target.value;refreshOrderNumber();renderPreview();});
+ for(const input of document.querySelectorAll('[data-field]'))input.oninput=()=>{const f=template().fields.find(f=>f.id===input.dataset.field);draft.values[input.dataset.field]=f?.key==='quantity'?quantityWithDue(input.value,draft.dueDate,draft.dueRaw):input.value;dirty=true;expandOrderText();};
+ $('#due-date')?.addEventListener('change',e=>{draft.dueDate=normalizeDueDate(e.target.value);draft.dueRaw='';syncDueDate(true);renderAttachmentFields();expandOrderText();dirty=true;});
+ $('#order-suffix')?.addEventListener('input',e=>{if(!draft)return;e.target.value=e.target.value.replace(/[^0-9]/g,'').slice(0,3);draft.orderSuffix=e.target.value;dirty=true;refreshOrderNumber();});
+ $('#order-suffix')?.addEventListener('blur',e=>{if(!draft)return;if(e.target.value)e.target.value=e.target.value.padStart(3,'0');draft.orderSuffix=e.target.value;refreshOrderNumber();});
  $('#parse-text').onclick=async()=>{if(busy)return;if(!template()){toast('請先新增供應商模板');return;}const text=$('#paste-text').value;if(!text.trim()){toast('請先貼上文字');return;}const r=readRequirementText(text);state.requirements.push(r);applySimpleRequirement(r);scan={text,message:'已套入文字需求'};state.drafts[selected]=structuredClone(draft);await save();renderCreate();};
  $('#save-draft').onclick=async()=>{if(!draft)return;refreshOrderNumber();state.drafts[selected]=structuredClone(draft);try{await save();dirty=false;toast('草稿已儲存');}catch(e){toast('儲存失敗：'+e.message);}};
- $('#export-word').onclick=()=>generate();$('#print-order').onclick=()=>{if(validate())window.print();};
+ $('#export-word').onclick=()=>generate();
 }
 function applySimpleRequirement(r,suffix=draft?.orderSuffix||''){
- const s=template();if(!s)return;const priorPart=Object.fromEntries(s.fields.filter(f=>f.key==='part').map(f=>[f.id,draft?.values[f.id]||f.value]));draft=newDraft(s);draft.orderSuffix=suffix;const mapped=requirementMapping(r,s);if(!r.fields.internalPart?.value)for(const [id,value]of Object.entries(priorPart))mapped[id]=value;for(const f of s.fields){if(f.key==='production')mapped[f.id]='依本採購單客戶需求附件及客戶提供之製作檔案執行。';if(['notes','notesTail'].includes(f.key)&&mapped[f.id])mapped[f.id]='依本採購單客戶需求附件及本次交付條款。';}Object.assign(draft.values,mapped);draft.dueDate=normalizeDueDate(r.fields.due?.value||'');draft.dueRaw=r.fields.due?.value||'';initializeDueDate();draft.requirementId=r.id;activeReq=r.id;refreshOrderNumber();dirty=true;
+ const s=template();if(!s)return;const priorPart=Object.fromEntries(s.fields.filter(f=>f.key==='part').map(f=>[f.id,draft?.values[f.id]||f.value]));const priorPrice=Object.fromEntries(s.fields.filter(f=>f.key==='price').map(f=>[f.id,draft?.values[f.id]||f.value]));draft=newDraft(s);draft.orderSuffix=suffix;const mapped=requirementMapping(r,s);Object.assign(mapped,priorPrice);if(!r.fields.internalPart?.value)for(const [id,value]of Object.entries(priorPart))mapped[id]=value;for(const f of s.fields){if(f.key==='production')mapped[f.id]='依本採購單客戶需求附件及客戶提供之製作檔案執行。';if(['notes','notesTail'].includes(f.key)&&mapped[f.id])mapped[f.id]='依本採購單客戶需求附件及本次交付條款。';}Object.assign(draft.values,mapped);draft.dueDate=normalizeDueDate(r.fields.due?.value||'');draft.dueRaw=r.fields.due?.value||'';initializeDueDate();draft.requirementId=r.id;activeReq=r.id;refreshOrderNumber();dirty=true;
 }
 
 function applyExtracted(extracted){if(!draft)return;let n=0;for(const f of template().fields)if(importable.has(f.key)&&extracted[f.key]){draft.values[f.id]=extracted[f.key];n++;}draft.reviewed=false;dirty=true;return n;}
@@ -108,8 +106,6 @@ init();
 
 setInterval(()=>{if(page==='create')refreshOrderNumber();},30000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&page==='create')refreshOrderNumber();});
-window.addEventListener('beforeprint',()=>{const el=document.querySelector('.requirement-preview');if(el){if(!el.hasAttribute('data-print-open'))el.dataset.printOpen=el.open?'1':'0';el.open=true;}});
-window.addEventListener('afterprint',()=>{const el=document.querySelector('.requirement-preview[data-print-open]');if(el){el.open=el.dataset.printOpen==='1';delete el.dataset.printOpen;}});
 
 
 function initializeDueDate(){
@@ -130,4 +126,8 @@ function syncDueDate(manual=false){
  }
 }
 
+
+
+function expandOrderText(){for(const el of document.querySelectorAll('textarea[data-field],textarea[data-annex]')){el.style.height='auto';el.style.height=(el.scrollHeight+2)+'px';}}
+window.addEventListener('resize',()=>requestAnimationFrame(expandOrderText));
 
