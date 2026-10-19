@@ -6,7 +6,7 @@ export function remapDraft(old,next,draft){
  const values={...draft.values};
  for(const f of next.fields){const before=old.fields.find(t=>t.id===f.id&&t.key===f.key)||old.fields.find(t=>t.key===f.key);let value=before?draft.values[before.id]:undefined;
   if(value===undefined||value===before?.value)value=f.value;
-  if(f.segment&&before&&!before.segment&&before.cell===f.cell){const label=f.key==='delivery'?/\s*付款方式\s*[:：]/:f.key==='mask'?/\s*表面處理\s*[:：]/:['inspection','production'].includes(f.key)?/\s*UL\s*MARK\s*[:：]/i:null;if(label)value=value.split(label)[0].trimEnd();}
+  if(f.segment&&before&&!before.segment&&before.cell===f.cell){const separators={delivery:/\s*付款方式\s*[:：]/,supplier:/\s*聯絡人\s*[:：]/,contact:/\s*(?:聯絡電話|電話)\s*[:：]/,copper:/\s*防焊\s*[:：]/,mask:/\s*(?:表面處理\s*[:：]|文字(?:顏色)?\s*[:：]?\s*(?=白|黑|黃|綠|藍|紅|無|雙|單))/,finish:/\s*檢驗標準\s*[:：]/,inspection:/\s*(?:UL\s*MARK|包裝方式)\s*[:：]/i,production:/\s*UL\s*MARK\s*[:：]/i};const label=separators[f.key];if(label)value=value.split(label)[0].trimEnd();}
   values[f.id]=value;
  }
  // Move only exact generated copies into matching original table fields.
@@ -19,16 +19,18 @@ export function remapDraft(old,next,draft){
  draft.values=values;delete draft.originalLayoutVersion;
 }
 export async function upgradeWorkspace(state){
- if(state.tableMappingVersion===2)return false;
+ if(state.tableMappingVersion===3)return false;
  for(let i=0;i<state.suppliers.length;i++){const old=state.suppliers[i],p=await parseDocx(Uint8Array.from(atob(old.data),c=>c.charCodeAt(0))),next={...old,fields:p.fields,rows:p.rows};
   for(const f of next.fields){const before=old.fields.find(t=>t.id===f.id&&t.cell===f.cell);if(before&&!f.segment)f.value=before.value;}
-  remapDraft(old,next,state.drafts[old.id]);state.suppliers[i]=next;
- }state.tableMappingVersion=2;return true;
+  next.name=p.name||next.name;remapDraft(old,next,state.drafts[old.id]);state.suppliers[i]=next;
+ }state.tableMappingVersion=3;return true;
 }
 export async function replaceSupplierTemplate(state,file){
  if(!/\.docx$/i.test(file.name)||file.size>5*1024*1024)throw Error('請選擇 5 MB 以內的 Word 模板');
  const bytes=await file.arrayBuffer(),p=await parseDocx(bytes);if(!p.orderNo||!['date','part','quantity','supplier'].every(k=>p.fields.some(f=>f.key===k)))throw Error('無法辨識採購單必要欄位');
- const old=state.suppliers.find(s=>compact(s.name)===compact(p.name)||compact(s.fields.find(f=>f.key==='supplier')?.value)===compact(p.name));if(!old)throw Error('找不到相同公司，請使用「新增供應商模板」');
+ const short=file.name.match(/[（(]([^()（）]+)[）)]/)?.[1]||'',contact=compact(p.fields.find(f=>f.key==='contact')?.value);
+ const candidates=state.suppliers.filter(s=>compact(s.name)===compact(p.name)||compact(s.fields.find(f=>f.key==='supplier')?.value)===compact(p.name));
+ const old=candidates.find(s=>short&&s.short===short)||candidates.find(s=>contact&&compact(s.fields.find(f=>f.key==='contact')?.value)===contact)||(!short&&candidates.length===1?candidates[0]:null);
  let data='';const a=new Uint8Array(bytes);for(let i=0;i<a.length;i+=16384)data+=String.fromCharCode(...a.subarray(i,i+16384));
- const next={...old,name:p.name,filename:file.name,data:btoa(data),fields:p.fields,rows:p.rows};remapDraft(old,next,state.drafts[old.id]);state.suppliers[state.suppliers.indexOf(old)]=next;return next;
+ const next={...old,id:old?.id||crypto.randomUUID(),short:old?.short||short||p.name,name:p.name,filename:file.name,data:btoa(data),fields:p.fields,rows:p.rows};if(old){remapDraft(old,next,state.drafts[old.id]);state.suppliers[state.suppliers.indexOf(old)]=next;}else state.suppliers.push(next);return next;
 }

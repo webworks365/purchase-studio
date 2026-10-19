@@ -3,7 +3,7 @@ export const DELIVERY='銘星科技有限公司';
 export function creationDate(iso){return new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Taipei'}).format(new Date(iso)).replaceAll('-','/');}
 export function supplierDisplay(s){const company=s.fields.find(f=>f.key==='supplier')?.value||s.name||s.short;const raw=s.fields.find(f=>f.key==='contact')?.value||'';const contact=raw.split(/\s*(?:聯絡電話|電話|TEL|手機|E-?MAIL|EM|電子郵件)\s*[:：]/i)[0].trim();return [company,contact].filter(Boolean).join('｜');}
 export function formRows(s){
- const groups=[['delivery','payment'],['supplier','contact'],['phone','email'],['item','date'],['customerPart','part'],['material','copper'],['mask','finish']];
+ const groups=[['delivery','payment'],['supplier','contact'],['phone','email'],['item','date'],['customerPart','part']];
  const consumed=new Set(),result=[];
  for(const row of s.rows){let pending=[];const flush=()=>{if(pending.length){result.push(pending);pending=[];}};
   for(const c of row){const f=s.fields.find(f=>f.id===c.id);if(!f){if(c.text)pending.push(c);continue;}if(consumed.has(f.id))continue;
@@ -26,16 +26,24 @@ export function mergeSupplements(s,values){
 export function normalizeDraft(s,draft){
  draft.createdAt??=new Date().toISOString();
  const generated=new Set(['依本採購單「客戶製作要求」附件及已確認之製作檔案執行。','依本採購單之客戶製作要求附件，及本次經確認的供應商交付條款。','依本採購單客戶需求附件及客戶提供之製作檔案執行。','依本採購單客戶需求附件及本次交付條款。']);
- for(const f of s.fields){if(f.key==='date')draft.values[f.id]=creationDate(draft.createdAt);if(f.key==='delivery')draft.values[f.id]=DELIVERY;
+ for(const f of s.fields){if(f.key==='date')draft.values[f.id]=creationDate(new Date().toISOString());if(f.key==='delivery')draft.values[f.id]=DELIVERY;
   if(['production','notes','notesTail'].includes(f.key)&&generated.has(draft.values[f.id]))draft.values[f.id]=f.value;
  }
  if(draft.originalLayoutVersion!==1){mergeSupplements(s,draft.values);draft.originalLayoutVersion=1;}
 }
+function patchCombined(base,key,value){
+ const patterns={layers:/\b\d+\s*(?:L(?:ayers?)?\b|層)/i,thickness:/(?:板厚|厚度|\bT)\s*\d+(?:\.\d+)?\s*T?\s*(?:mm|mil|inch)?|\b\d+(?:\.\d+)?\s*(?:mm|mil|inch)/i};
+ if(key==='material'){if(/[／/]/.test(value))return value;const first=base.search(/[／/]/);if(first>=0)return value+base.slice(first);const at=base.search(/\b\d+\s*L\b|(?:板厚|厚度|\bT)\s*\d/i);return at>0?value+' '+base.slice(at):value;}
+ if(patterns[key]){const v=key==='layers'&&!/層|L(?:ayers?)?$/i.test(value)?value+'L':value;return patterns[key].test(base)?base.replace(patterns[key],()=>v):[base,requirementFields[key]+'：'+value].filter(Boolean).join('／');}
+ return value;
+}
 export function intakeValues(r,s,previous={}){
- const values=requirementMapping(r,s);
+ const mapped=requirementMapping(r,s),values={...previous,...mapped};
+ for(const f of s.fields)if(!Object.hasOwn(values,f.id))values[f.id]=f.value;
  for(const f of s.fields){
-  if(['production','notes','notesTail'].includes(f.key))values[f.id]=values[f.id]===undefined?f.value:addUnique(f.value,'',values[f.id]);
-  if(['part','price'].includes(f.key)&&!(f.key==='part'&&r.fields.internalPart?.value))values[f.id]=previous[f.id]||f.value;
+  const items=Object.entries(r.fields).filter(([key,e])=>e.value?.trim()&&requirementTargets(s,key).some(t=>t.id===f.id));
+  if(f.key==='material'&&items.length){let base=previous[f.id]??f.value;for(const key of ['material','layers','thickness']){const e=items.find(([k])=>k===key);if(e)base=patchCombined(base,key,e[1].value);}values[f.id]=base;}
+  if(['production','notes','notesTail'].includes(f.key)&&mapped[f.id]!==undefined)values[f.id]=addUnique(previous[f.id]??f.value,'',mapped[f.id]);
   if(f.key==='delivery')values[f.id]=DELIVERY;
  }
  mergeSupplements(s,values);return values;

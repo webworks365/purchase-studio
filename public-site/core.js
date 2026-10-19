@@ -1,4 +1,4 @@
-import {normalizeDueDate,splitQuantityDue} from './due-date.js';
+import {normalizeDueDate,splitQuantityDue,replaceOriginalDue} from './due-date.js';
 export const W='http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 export const labels=[['item',/^項目/],['date',/^訂購時間|^訂購日期/],['customerPart',/^客戶料號/],['part',/料號$/],['quantity',/^訂購數量|^數量/],['delivery',/^交貨地點/],['payment',/^付款方式/],['supplier',/^廠商名稱|^供應商/],['supplierAddress',/^廠商地址/],['contact',/^聯絡人/],['phone',/^電話/],['email',/^EM$|^EMAIL$/i],['production',/^製作內容/],['material',/^材料板厚|^材料規格/],['copper',/^銅厚/],['mask',/^防焊/],['finish',/^表面處理/],['inspection',/^檢驗標準/],['ul',/^UL\s*MARK/i],['notes',/^(?:重要)?備註/],['maker',/^製表者/]];
 labels.unshift(['layers',/^(?:PCB)?層數$/],['thickness',/^(?:成品)?板厚(?:與公差)?$/],['legend',/^文字(?:顏色|面別)?$/],['size',/^(?:成品|單片)?尺寸$/],['panel',/^(?:拼板|連板|成型)/],['stackup',/^(?:疊構|層疊順序)/],['via',/^(?:導通孔|塞孔)/],['impedance',/^阻抗/],['reports',/^(?:測試報告|隨貨文件)/],['marking',/^(?:LOGO|週期標記)/i],['origin',/^產地/],['goldfinger',/^金手指/],['baseCopper',/^(?:原始)?基銅/],['stencil',/^鋼板/],['gerber',/^Gerber/i],['temperature',/^(?:Tg|TG|溫度條件)$/],['revision',/^版本$/],['project',/^專案編號$/]);
@@ -13,19 +13,24 @@ export function parseDocument(xml){
   const cs=Array.from(row.children).filter(n=>n.localName==='tc'),out=[];
   for(let i=0;i<cs.length;i++){
    const value=textOf(cs[i]);const clean=value.replace(/[:：\s]/g,'');const match=labels.find(([,re])=>re.test(clean));
-   if(match&&i+1<cs.length){const f=add(cs[++i],match[0],value.replace(/[:：]\s*$/,'').trim());out.push({label:f.label,id:f.id});}
-   else if(value&&/^(?:單價|打包價|總|Usd|USD|NT|Nt|US\$|\$)/.test(value)){const f=add(cs[i],'price','單價／金額與費用');out.push({label:f.label,id:f.id});}
-   else if(cs.length===1&&value){const signature=value.length<60&&/核\s*准|廠商回簽/.test(value);const f=add(cs[i],signature?'signature':'notesTail',signature?'核准／廠商回簽':'補充條款／包裝與附件');out.push({label:f.label,id:f.id});}
+   if(match&&i+1<cs.length){
+    if(match[0]==='notes'&&/^(?:重要)?備註\s*[:：]\s*\S/.test(value)){const prefix=value.match(/^(?:重要)?備註\s*[:：]\s*/)[0],f=add(cs[i],'notes',value.startsWith('重要')?'重要備註':'備註');f.value=value.slice(prefix.length);f.segment={start:prefix.length,end:value.length};out.push({label:f.label,id:f.id});}
+    else{const f=add(cs[++i],match[0],value.replace(/[:：]\s*$/,'').trim());out.push({label:f.label,id:f.id});}
+   }
+   else if(value&&/^(?:單價|金額|打包價|總|Usd|USD|NT|Nt|US\$|\$)/.test(value)){const f=add(cs[i],'price','單價／金額與費用');out.push({label:f.label,id:f.id});}
+   else if(cs.length===1&&value){const signature=/^核\s*准|^廠商回簽/.test(value),inline=value.match(/^(UL\s*MARK)\s*[:：]\s*/i);const f=add(cs[i],inline?'ul':signature?'signature':'notesTail',inline?'UL MARK':signature?'核准／廠商回簽':'備註（續）');if(inline){f.value=value.slice(inline[0].length);f.segment={start:inline[0].length,end:value.length};}out.push({label:f.label,id:f.id});}
    else if(value){out.push({text:value});}
   }
   if(out.length)rows.push(out);
  }
  // A few originals put two labeled values in one cell. Expose both inputs,
  // then join them into that same original cell during export.
- for(const f of [...fields]){
-  const inline=f.key==='delivery'?[['payment','付款方式',/付款方式\s*[:：]\s*/]]:f.key==='mask'?[['finish','表面處理',/表面處理\s*[:：]\s*/]]:['inspection','production'].includes(f.key)?[['ul','UL MARK',/UL\s*MARK\s*[:：]\s*/i]]:[];
-  for(const [key,label,re]of inline){const m=re.exec(f.value);if(!m)continue;const full=f.value,start=m.index+m[0].length;f.value=full.slice(0,m.index).trimEnd();f.segment={start:0,end:f.value.length};let id=key,n=2;while(fields.some(t=>t.id===id))id=key+(n++);const extra={id,key,label,cell:f.cell,value:full.slice(start),segment:{start,end:full.length}};fields.push(extra);const row=rows.find(r=>r.some(c=>c.id===f.id));row?.push({id,label});}
+ for(let i=0;i<fields.length;i++){
+  const f=fields[i],specs={delivery:[['payment','付款方式',/付款方式\s*[:：]\s*/]],supplier:[['contact','聯絡人',/聯絡人\s*[:：]\s*/]],contact:[['phone','聯絡電話',/(?:聯絡電話|電話)\s*[:：]\s*/]],copper:[['mask','防焊',/防焊\s*[:：]\s*/]],mask:[['finish','表面處理',/表面處理\s*[:：]\s*/],['legend','文字',/文字(?:顏色)?\s*[:：]?\s*(?=白|黑|黃|綠|藍|紅|無|雙|單)/]],legend:[['finish','表面處理',/表面處理\s*[:：]\s*/]],finish:[['inspection','檢驗標準',/檢驗標準\s*[:：]\s*/]],inspection:[['ul','UL MARK',/UL\s*MARK\s*[:：]\s*/i],['packaging','包裝方式',/包裝方式\s*[:：]\s*/]],production:[['ul','UL MARK',/UL\s*MARK\s*[:：]\s*/i]]};
+  const found=(specs[f.key]||[]).map(([key,label,re])=>({key,label,m:re.exec(f.value)})).filter(t=>t.m).sort((a,b)=>a.m.index-b.m.index)[0];if(!found)continue;
+  const {key,label,m}=found,full=f.value,offset=f.segment?.start||0,end=f.segment?.end??full.length,start=offset+m.index+m[0].length;f.value=full.slice(0,m.index).trimEnd();f.segment={start:offset,end:offset+f.value.length};let id=key,n=2;while(fields.some(t=>t.id===id))id=key+(n++);const extra={id,key,label,cell:f.cell,value:full.slice(m.index+m[0].length),segment:{start,end}};fields.splice(i+1,0,extra);const row=rows.find(r=>r.some(c=>c.id===f.id)),pos=row?.findIndex(c=>c.id===f.id);if(row)row.splice(pos+1,0,{id,label});
  }
+
  const full=textOf(x),orderNo=full.match(/訂單號碼\s*[:：]\s*([^\s\n]+)/)?.[1]||'';
  return {fields,rows,orderNo,text:full,name:fields.find(f=>f.key==='supplier')?.value||''};
 }
@@ -55,6 +60,7 @@ function originalLayoutValues(template,values){
  for(const f of quantity)if(values[f.id]!==undefined)out[f.id]=splitQuantityDue(values[f.id]).quantity;
  for(const f of template.fields.filter(f=>f.key==='delivery'))out[f.id]='銘星科技有限公司';
  const target=template.fields.find(f=>['quantity','delivery'].includes(f.key)&&/交期/.test(f.value))||quantity[0];
+ if(target?.key==='quantity'&&date&&splitQuantityDue(values[target.id]).quantity===splitQuantityDue(target.value).quantity){out[target.id]=replaceOriginalDue(target.value,date);return out;}
  if(target&&due){const base=out[target.id]??target.value,separator=target.value.match(/([\s]+)交期/)?.[1]||'\n';out[target.id]=/^\s*交期/.test(target.value)?due+'\n'+base:base+separator+due;}
  return out;
 }
@@ -62,6 +68,7 @@ export async function exportDocx(template,values,orderNo){
  const zip=await JSZip.loadAsync(template.data,{base64:true});const x=parseXml(await zip.file('word/document.xml').async('string'));
  const cells=Array.from(x.getElementsByTagNameNS(W,'tc'));
  const filled=originalLayoutValues(template,values);
+ const extra=String(values.__extraRequirement||'').trim(),note=template.fields.find(f=>f.key==='notesTail')||template.fields.find(f=>f.key==='notes');if(extra&&note&&!String(filled[note.id]??note.value).includes(extra))filled[note.id]=[filled[note.id]??note.value,extra].filter(Boolean).join('\n');
  for(const index of new Set(template.fields.map(f=>f.cell))){const cell=cells[index];if(!cell)continue;const group=template.fields.filter(f=>f.cell===index);let text=textOf(cell);if(group.some(f=>f.segment)){for(const f of [...group].sort((a,b)=>b.segment.start-a.segment.start))if(filled[f.id]!==undefined)text=text.slice(0,f.segment.start)+filled[f.id]+text.slice(f.segment.end);}else if(filled[group[0].id]!==undefined)text=filled[group[0].id];if(textOf(cell)!==text)setCellText(cell,text);}
 
  // Order number may span Word runs. Rebuild only its paragraph when changed.

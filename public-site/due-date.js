@@ -5,10 +5,16 @@ export function normalizeDueDate(value){
  return [y,String(m).padStart(2,'0'),String(d).padStart(2,'0')].join('-');
 }
 export function splitQuantityDue(value){
- const text=String(value||'');const match=text.match(/交期[\s\S]*?(?=(?:[-－—]+\s*)?\d[\d,]*\s*(?:PCS|PNL|SET|PANELS?)\b|$)/i);
- if(!match)return {quantity:text,rawDue:''};
- const quantity=(text.slice(0,match.index)+text.slice(match.index+match[0].length)).trim().replace(/^[-－—]+\s*(?=\d)/,'');
- return {quantity,rawDue:match[0].trim()};
+ const text=String(value||''),re=/交期[^\n]*?(?=(?:[-－—]+\s*)?\d[\d,]*\s*(?:PCS|PNL|SET|PANELS?)\b|\n|$)/gi,all=[...text.matchAll(re)];
+ if(!all.length)return {quantity:text,rawDue:''};
+ const quantity=text.replace(re,'').split('\n').map(line=>line.replace(/^[-－—]+\s*(?=\d)/,'').trimEnd()).join('\n').trim();
+ return {quantity,rawDue:all.map(m=>m[0].trim()).join('\n')};
+}
+export function replaceOriginalDue(text,date){
+ return String(text).replace(/交期[^\n]*?(?=(?:[-－—]+\s*)?\d[\d,]*\s*(?:PCS|PNL|SET|PANELS?)\b|\n|$)/gi,clause=>{
+  const formatted=date.replaceAll('-','/'),pattern=/(?:\d{4}[\/.-]+\d{1,2}[\/.-]+\d{1,2}|\d{1,2}[\/.-]+\d{1,2}(?:[\/….-]+\d{4})?)/;
+  return pattern.test(clause)?clause.replace(pattern,()=>formatted):'交期：'+formatted;
+ });
 }
 export function quantityWithDue(quantity,date,rawDue=''){
  const base=splitQuantityDue(quantity).quantity.trim(),suffix=date?'交期：'+date.replaceAll('-','/'):(rawDue?(/^交期/.test(rawDue)?rawDue:'交期：'+rawDue):'');
