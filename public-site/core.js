@@ -1,6 +1,7 @@
 import {normalizeDueDate,splitQuantityDue} from './due-date.js';
 export const W='http://schemas.openxmlformats.org/wordprocessingml/2006/main';
-export const labels=[['item',/^項目/],['date',/^訂購時間|^訂購日期/],['customerPart',/^客戶料號/],['part',/料號$/],['quantity',/^訂購數量|^數量/],['delivery',/^交貨地點/],['payment',/^付款方式/],['supplier',/^廠商名稱|^供應商/],['supplierAddress',/^廠商地址/],['contact',/^聯絡人/],['phone',/^電話/],['email',/^EM$|^EMAIL$/i],['production',/^製作內容/],['material',/^材料板厚|^材料規格/],['copper',/^銅厚/],['mask',/^防焊/],['finish',/^表面處理/],['inspection',/^檢驗標準/],['ul',/^UL\s*MARK/i],['notes',/^備註/],['maker',/^製表者/]];
+export const labels=[['item',/^項目/],['date',/^訂購時間|^訂購日期/],['customerPart',/^客戶料號/],['part',/料號$/],['quantity',/^訂購數量|^數量/],['delivery',/^交貨地點/],['payment',/^付款方式/],['supplier',/^廠商名稱|^供應商/],['supplierAddress',/^廠商地址/],['contact',/^聯絡人/],['phone',/^電話/],['email',/^EM$|^EMAIL$/i],['production',/^製作內容/],['material',/^材料板厚|^材料規格/],['copper',/^銅厚/],['mask',/^防焊/],['finish',/^表面處理/],['inspection',/^檢驗標準/],['ul',/^UL\s*MARK/i],['notes',/^(?:重要)?備註/],['maker',/^製表者/]];
+labels.unshift(['layers',/^(?:PCB)?層數$/],['thickness',/^(?:成品)?板厚(?:與公差)?$/],['legend',/^文字(?:顏色|面別)?$/],['size',/^(?:成品|單片)?尺寸$/],['panel',/^(?:拼板|連板|成型)/],['stackup',/^(?:疊構|層疊順序)/],['via',/^(?:導通孔|塞孔)/],['impedance',/^阻抗/],['reports',/^(?:測試報告|隨貨文件)/],['marking',/^(?:LOGO|週期標記)/i],['origin',/^產地/],['goldfinger',/^金手指/],['baseCopper',/^(?:原始)?基銅/],['stencil',/^鋼板/],['gerber',/^Gerber/i],['temperature',/^(?:Tg|TG|溫度條件)$/],['revision',/^版本$/],['project',/^專案編號$/]);
 export const transactional=new Set(['date','customerPart','part','quantity','price']);
 export const importable=new Set(['item','date','customerPart','part','quantity','price','production','material','copper','mask','finish','inspection','ul']);
 export const textOf=n=>Array.from(n.getElementsByTagNameNS(W,'p')).map(p=>Array.from(p.getElementsByTagNameNS(W,'t')).map(t=>t.textContent).join('')).join('\n').trim();
@@ -13,11 +14,17 @@ export function parseDocument(xml){
   for(let i=0;i<cs.length;i++){
    const value=textOf(cs[i]);const clean=value.replace(/[:：\s]/g,'');const match=labels.find(([,re])=>re.test(clean));
    if(match&&i+1<cs.length){const f=add(cs[++i],match[0],value.replace(/[:：]\s*$/,'').trim());out.push({label:f.label,id:f.id});}
-   else if(value&&/^(?:單價|總|Usd|USD|NT|Nt|US\$|\$)/.test(value)){const f=add(cs[i],'price','單價／金額與費用');out.push({label:f.label,id:f.id});}
+   else if(value&&/^(?:單價|打包價|總|Usd|USD|NT|Nt|US\$|\$)/.test(value)){const f=add(cs[i],'price','單價／金額與費用');out.push({label:f.label,id:f.id});}
    else if(cs.length===1&&value){const signature=value.length<60&&/核\s*准|廠商回簽/.test(value);const f=add(cs[i],signature?'signature':'notesTail',signature?'核准／廠商回簽':'補充條款／包裝與附件');out.push({label:f.label,id:f.id});}
    else if(value){out.push({text:value});}
   }
   if(out.length)rows.push(out);
+ }
+ // A few originals put two labeled values in one cell. Expose both inputs,
+ // then join them into that same original cell during export.
+ for(const f of [...fields]){
+  const inline=f.key==='delivery'?[['payment','付款方式',/付款方式\s*[:：]\s*/]]:f.key==='mask'?[['finish','表面處理',/表面處理\s*[:：]\s*/]]:['inspection','production'].includes(f.key)?[['ul','UL MARK',/UL\s*MARK\s*[:：]\s*/i]]:[];
+  for(const [key,label,re]of inline){const m=re.exec(f.value);if(!m)continue;const full=f.value,start=m.index+m[0].length;f.value=full.slice(0,m.index).trimEnd();f.segment={start:0,end:f.value.length};let id=key,n=2;while(fields.some(t=>t.id===id))id=key+(n++);const extra={id,key,label,cell:f.cell,value:full.slice(start),segment:{start,end:full.length}};fields.push(extra);const row=rows.find(r=>r.some(c=>c.id===f.id));row?.push({id,label});}
  }
  const full=textOf(x),orderNo=full.match(/訂單號碼\s*[:：]\s*([^\s\n]+)/)?.[1]||'';
  return {fields,rows,orderNo,text:full,name:fields.find(f=>f.key==='supplier')?.value||''};
@@ -55,7 +62,8 @@ export async function exportDocx(template,values,orderNo){
  const zip=await JSZip.loadAsync(template.data,{base64:true});const x=parseXml(await zip.file('word/document.xml').async('string'));
  const cells=Array.from(x.getElementsByTagNameNS(W,'tc'));
  const filled=originalLayoutValues(template,values);
- for(const f of template.fields){if(cells[f.cell]&&filled[f.id]!==undefined&&textOf(cells[f.cell])!==filled[f.id])setCellText(cells[f.cell],filled[f.id]);}
+ for(const index of new Set(template.fields.map(f=>f.cell))){const cell=cells[index];if(!cell)continue;const group=template.fields.filter(f=>f.cell===index);let text=textOf(cell);if(group.some(f=>f.segment)){for(const f of [...group].sort((a,b)=>b.segment.start-a.segment.start))if(filled[f.id]!==undefined)text=text.slice(0,f.segment.start)+filled[f.id]+text.slice(f.segment.end);}else if(filled[group[0].id]!==undefined)text=filled[group[0].id];if(textOf(cell)!==text)setCellText(cell,text);}
+
  // Order number may span Word runs. Rebuild only its paragraph when changed.
  for(const p of Array.from(x.getElementsByTagNameNS(W,'p'))){const ts=Array.from(p.getElementsByTagNameNS(W,'t')),s=ts.map(t=>t.textContent).join('');if(/訂單號碼\s*[:：]/.test(s)&&ts.length){ts[0].textContent=s.replace(/(訂單號碼\s*[:：]\s*)[^\s\n]+/,(_,label)=>label+orderNo);for(const t of ts.slice(1))t.textContent='';}}
  zip.file('word/document.xml',new XMLSerializer().serializeToString(x));

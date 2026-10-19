@@ -30,6 +30,8 @@ function paragraphText(p){
 function fresh(name,type,text){return {id:crypto.randomUUID(),name,type,text,fields:{},issues:[],resolutions:{},approved:false,appliedSupplier:null,attachments:[],createdAt:new Date().toISOString()};}
 function fromText(r){
  const rules={customerPart:/(?:^|\n)\s*(?:客戶料號|產品料號|料號)\s*[:：]\s*([^\s\n]+)/,internalPart:/(?:銘星料號|本公司料號)\s*[:：]\s*([^\s\n]+)/,layers:/(?:PCB層數|層數)\s*[:：]\s*(\d+\s*(?:Layer|層)?)/i,quantity:/(?:PCB需求量|訂購數量)\s*[:：]\s*([^\n]+)/,material:/(?:PCB原料材質|材料板厚|材料規格|材質)\s*[:：]\s*([^\n]+)/,thickness:/(?:PCB厚度|成品板厚|板厚)\s*[:：]\s*([^\n]+)/,copper:/(?:成品銅厚|銅厚)\s*[:：]\s*([^\n]+)/,finish:/(?:PCB電鍍型態|表面處理)\s*[:：]\s*([^\n]+)/,mask:/防焊\s*[:：]\s*([^\n]+)/,due:/(?:需求日期|交期)\s*[:：]\s*([^\n]+)/};
+ const extra={legend:'文字(?:顏色|面別)?',inspection:'檢驗(?:標準|依據)',ul:'UL\\s*(?:MARK|文字|標記)',size:'(?:PCB尺寸大小|成品尺寸)',panel:'(?:排版成型|拼板|連板)',stackup:'(?:板層面順序|層疊順序|疊構)',via:'(?:導通孔處理|塞孔)',baseCopper:'(?:原始基銅|基銅)',gerber:'Gerber(?:\\s*Files|版本)?',marking:'(?:LOGO|週期標記)',impedance:'阻抗',reports:'(?:測試報告|隨貨文件)',revision:'版本',project:'專案編號',origin:'(?:產品產地文字|產地文字)',special:'(?:特殊需求附加說明|特殊需求)'};
+ for(const [key,label]of Object.entries(extra))rules[key]=new RegExp('(?:^|\\n)\\s*(?:'+label+')\\s*[:：]\\s*([^\\n]+)','i');
  for(const[k,re]of Object.entries(rules)){const m=r.text.match(re);if(m&&!r.fields[k]){const v=selectedOptions(m[1]);if(v)field(r,k,v,evidence(r.name,'文字段落',m[0]));}}
 }
 export async function readRequirementDocx(data,name){
@@ -126,15 +128,17 @@ export function checkRequirement(r,template,now=new Date()){
  // A missing critical value cannot be waived by ticking a resolution.
  return findings.map(f=>({...f,resolution:r.resolutions[f.id],resolved:f.severity==='info'||(!f.id.startsWith('missing-')&&!f.id.startsWith('manual-')&&!!r.resolutions[f.id]?.note?.trim())}));
 }
-export function requirementSummary(r){return Object.values(r.fields).filter(f=>f.value?.trim()).map(f=>({label:f.label,value:f.value,source:f.origin==='manual'?'人工確認：'+f.note:f.evidence.map(e=>e.file+'／'+e.locator).join('；')}));}
+export function requirementTargets(template,key){
+ const direct=key==='internalPart'?'part':key;
+ const exact=template.fields.filter(t=>t.key===direct);if(exact.length)return exact;
+ const combined={layers:['material'],thickness:['material'],legend:['mask'],finish:['mask'],baseCopper:['copper'],due:['quantity'],ul:['inspection','production'],gerber:['production'],process:['production'],origin:['production','inspection']};
+ if(['ul','origin'].includes(key)){const re=key==='ul'?/UL\b/i:/Made\s+In|產地/i;return template.fields.filter(t=>(combined[key]||[]).includes(t.key)&&re.test(t.value));}
+ return template.fields.filter(t=>(combined[key]||[]).includes(t.key));
+}
+export function requirementSummary(r){return Object.values(r.fields).filter(f=>f.value?.trim()).map(f=>({key:f.key,label:f.label,value:f.value,source:f.origin==='manual'?'人工確認：'+f.note:(f.evidence||[]).map(e=>e.file+'／'+e.locator).join('；')}));}
 export function requirementMapping(r,template){
- const f=k=>r.fields[k]?.value||'',values={};
- // Customer part numbers never become the purchasing company's own part numbers.
- const direct={customerPart:f('customerPart'),part:f('internalPart'),quantity:f('quantity')+(f('due')?'\n交期：'+f('due'):''),material:[f('material'),f('layers')?f('layers')+' 層':'',f('thickness')].filter(Boolean).join('／'),copper:f('copper'),mask:[f('mask'),f('legend')?'文字：'+f('legend'):''].filter(Boolean).join('／'),finish:f('finish'),inspection:f('inspection'),ul:f('ul'),production:'依本採購單「客戶製作要求」附件及已確認之製作檔案執行。',delivery:f('delivery')};
- const technical=new Set(['material','copper','mask','finish','inspection','ul','production','notes','notesTail']);
- for(const t of template.fields){if(t.key==='notesTail'&&t.value.length<60&&/核\s*准|廠商回簽/.test(t.value))continue;if(technical.has(t.key))values[t.id]=direct[t.key]||(['notes','notesTail'].includes(t.key)?'依本採購單之客戶製作要求附件，及本次經確認的供應商交付條款。':'');else if(Object.hasOwn(direct,t.key))values[t.id]=direct[t.key];}
- // Some supplier layouts combine finish in the solder-mask cell.
- if(!template.fields.some(t=>t.key==='finish')&&f('finish')){const m=template.fields.find(t=>t.key==='mask');if(m)values[m.id]=(values[m.id]||'')+'\n表面處理：'+f('finish');}
+ const values={},groups=new Map();
+ for(const [key,entry]of Object.entries(r.fields)){if(!entry.value?.trim()||['delivery','internalPart'].includes(key)&&!entry.value)continue;for(const t of requirementTargets(template,key)){if(['date','delivery'].includes(t.key))continue;const items=groups.get(t.id)||[];items.push({key,value:entry.value,label:requirementFields[key]||entry.label});groups.set(t.id,items);}}
+ for(const t of template.fields){const items=groups.get(t.id);if(!items)continue;values[t.id]=items.map(e=>{if(e.key===t.key||e.key==='internalPart'&&t.key==='part')return e.value;if(e.key==='layers')return /層|L(?:ayer)?s?$/i.test(e.value)?e.value:e.value+' 層';if(e.key==='due')return '交期：'+e.value;return e.label+'：'+e.value;}).join('\n');}
  values.__requirementAppendix=requirementSummary(r);return values;
 }
-
