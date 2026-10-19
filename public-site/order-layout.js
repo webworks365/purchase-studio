@@ -17,11 +17,11 @@ const compact=s=>String(s||'').replace(/\s/g,'').toLowerCase();
 const containsValue=(text,value)=>String(value||'').split('\n').filter(s=>s.trim()).every(line=>compact(text).includes(compact(line)));
 function addUnique(base,label,value){let text=String(base||'').trim();for(const line of String(value||'').split('\n').map(s=>s.trim()).filter(Boolean)){if(!compact(text).includes(compact(line)))text+=(text?'\n':'')+(label?label+'：':'')+line;label='';}return text;}
 const mapped={customerPart:['customerPart'],internalPart:['part'],quantity:['quantity'],layers:['material'],material:['material'],thickness:['material'],copper:['copper'],mask:['mask'],legend:['mask'],finish:['finish','mask'],inspection:['inspection'],ul:['ul'],delivery:['delivery'],due:['quantity','delivery']};
-export function supplementalRows(s,values){return (values.__requirementAppendix||[]).filter(row=>{const key=keyOf(row);if(requirementTargets(s,key).length)return false;return !s.fields.filter(f=>['notes','notesTail','production'].includes(f.key)).some(f=>containsValue(values[f.id],row.value));});}
-export function mergeSupplements(s,values){
- const target=s.fields.find(f=>f.key==='notesTail'&&!/核\s*准|廠商回簽/.test(f.value))||s.fields.find(f=>f.key==='notes')||s.fields.find(f=>f.key==='production');
- if(!target)return;
- for(const row of supplementalRows(s,values))values[target.id]=addUnique(values[target.id],row.label,row.value);
+export function supplementalRows(){return [];}
+export function mergeSupplements(){}
+function removeGeneratedNotes(s,values){
+ const copies=(values.__requirementAppendix||[]).filter(row=>keyOf(row)!=='notes').flatMap(row=>String(row.value||'').split('\n').flatMap(line=>[line.trim(),row.label+'：'+line.trim()]));
+ for(const f of s.fields.filter(f=>['notes','notesTail'].includes(f.key))){const original=new Set(String(f.value).split('\n').map(v=>v.trim()));values[f.id]=String(values[f.id]??f.value).split('\n').filter(line=>original.has(line.trim())||!copies.includes(line.trim())).join('\n');}
 }
 export function normalizeDraft(s,draft){
  draft.createdAt??=new Date().toISOString();
@@ -29,7 +29,7 @@ export function normalizeDraft(s,draft){
  for(const f of s.fields){if(f.key==='date')draft.values[f.id]=creationDate(new Date().toISOString());if(f.key==='delivery')draft.values[f.id]=DELIVERY;
   if(['production','notes','notesTail'].includes(f.key)&&generated.has(draft.values[f.id]))draft.values[f.id]=f.value;
  }
- if(draft.originalLayoutVersion!==1){mergeSupplements(s,draft.values);draft.originalLayoutVersion=1;}
+ if(draft.notesPolicyVersion!==2){removeGeneratedNotes(s,draft.values);draft.notesPolicyVersion=2;}
 }
 function patchCombined(base,key,value){
  const patterns={layers:/\b\d+\s*(?:L(?:ayers?)?\b|層)/i,thickness:/(?:板厚|厚度|\bT)\s*\d+(?:\.\d+)?\s*T?\s*(?:mm|mil|inch)?|\b\d+(?:\.\d+)?\s*(?:mm|mil|inch)/i};
@@ -38,12 +38,12 @@ function patchCombined(base,key,value){
  return value;
 }
 export function intakeValues(r,s,previous={}){
- const mapped=requirementMapping(r,s),values={...previous,...mapped};
+ const cleanPrevious={...previous};removeGeneratedNotes(s,cleanPrevious);const mapped=requirementMapping(r,s),values={...cleanPrevious,...mapped};
  for(const f of s.fields)if(!Object.hasOwn(values,f.id))values[f.id]=f.value;
  for(const f of s.fields){
   const items=Object.entries(r.fields).filter(([key,e])=>e.value?.trim()&&requirementTargets(s,key).some(t=>t.id===f.id));
   if(f.key==='material'&&items.length){let base=previous[f.id]??f.value;for(const key of ['material','layers','thickness']){const e=items.find(([k])=>k===key);if(e)base=patchCombined(base,key,e[1].value);}values[f.id]=base;}
-  if(['production','notes','notesTail'].includes(f.key)&&mapped[f.id]!==undefined)values[f.id]=addUnique(previous[f.id]??f.value,'',mapped[f.id]);
+  if(['production','notes','notesTail'].includes(f.key)&&mapped[f.id]!==undefined)values[f.id]=addUnique(cleanPrevious[f.id]??f.value,'',mapped[f.id]);
   if(f.key==='delivery')values[f.id]=DELIVERY;
  }
  mergeSupplements(s,values);return values;

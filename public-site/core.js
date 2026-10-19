@@ -1,3 +1,4 @@
+import {insertImages} from './requirement-images.js';
 import {normalizeDueDate,splitQuantityDue,replaceOriginalDue} from './due-date.js';
 export const W='http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 export const labels=[['item',/^項目/],['date',/^訂購時間|^訂購日期/],['customerPart',/^客戶料號/],['part',/料號$/],['quantity',/^訂購數量|^數量/],['delivery',/^交貨地點/],['payment',/^付款方式/],['supplier',/^廠商名稱|^供應商/],['supplierAddress',/^廠商地址/],['contact',/^聯絡人/],['phone',/^電話/],['email',/^EM$|^EMAIL$/i],['production',/^製作內容/],['material',/^材料板厚|^材料規格/],['copper',/^銅厚/],['mask',/^防焊/],['finish',/^表面處理/],['inspection',/^檢驗標準/],['ul',/^UL\s*MARK/i],['notes',/^(?:重要)?備註/],['maker',/^製表者/]];
@@ -68,11 +69,11 @@ export async function exportDocx(template,values,orderNo){
  const zip=await JSZip.loadAsync(template.data,{base64:true});const x=parseXml(await zip.file('word/document.xml').async('string'));
  const cells=Array.from(x.getElementsByTagNameNS(W,'tc'));
  const filled=originalLayoutValues(template,values);
- const extra=String(values.__extraRequirement||'').trim(),note=template.fields.find(f=>f.key==='notesTail')||template.fields.find(f=>f.key==='notes');if(extra&&note&&!String(filled[note.id]??note.value).includes(extra))filled[note.id]=[filled[note.id]??note.value,extra].filter(Boolean).join('\n');
  for(const index of new Set(template.fields.map(f=>f.cell))){const cell=cells[index];if(!cell)continue;const group=template.fields.filter(f=>f.cell===index);let text=textOf(cell);if(group.some(f=>f.segment)){for(const f of [...group].sort((a,b)=>b.segment.start-a.segment.start))if(filled[f.id]!==undefined)text=text.slice(0,f.segment.start)+filled[f.id]+text.slice(f.segment.end);}else if(filled[group[0].id]!==undefined)text=filled[group[0].id];if(textOf(cell)!==text)setCellText(cell,text);}
 
  // Order number may span Word runs. Rebuild only its paragraph when changed.
  for(const p of Array.from(x.getElementsByTagNameNS(W,'p'))){const ts=Array.from(p.getElementsByTagNameNS(W,'t')),s=ts.map(t=>t.textContent).join('');if(/訂單號碼\s*[:：]/.test(s)&&ts.length){ts[0].textContent=s.replace(/(訂單號碼\s*[:：]\s*)[^\s\n]+/,(_,label)=>label+orderNo);for(const t of ts.slice(1))t.textContent='';}}
+ await insertImages(zip,x,template,values.__images);
  zip.file('word/document.xml',new XMLSerializer().serializeToString(x));
  return zip.generateAsync({type:'blob',compression:'DEFLATE',mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'});
 }
