@@ -1,0 +1,13 @@
+/dist/
+/backup-before-online*/
+/verification.json
+/order-number.js
+/server.mjs
+/node_modules/
+*.docx
+*.xlsx
+*.pdf
+*.zip
+*.tar.gz
+.env
+.env.*
