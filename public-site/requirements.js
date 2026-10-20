@@ -1,5 +1,6 @@
 import {readManufacturingCells} from './xlsx-intake.js';
 import {semanticText,semanticGrid} from './semantic-intake.js';
+import {requirementText,manufacturingFields} from './requirement-text.js';
 import {documentImages} from './requirement-images.js';
 import {normalizeIntake} from './normalize-intake.js';
 // Requirement review is deterministic and source based. It does not execute document instructions.
@@ -141,7 +142,7 @@ export function requirementTargets(template,key){
 export function requirementSummary(r){return Object.values(r.fields).filter(f=>f.value?.trim()).map(f=>({key:f.key,label:f.label,value:f.value,source:f.origin==='manual'?'人工確認：'+f.note:(f.evidence||[]).map(e=>e.file+'／'+e.locator).join('；')}));}
 export function requirementMapping(r,template){
  const values={},groups=new Map();
- for(const [key,entry]of Object.entries(r.fields)){if(entry.blocked||!entry.value?.trim()||['delivery','internalPart'].includes(key)&&!entry.value)continue;for(const t of requirementTargets(template,key)){if(['date','delivery'].includes(t.key))continue;const items=groups.get(t.id)||[];items.push({key,value:entry.value,label:requirementFields[key]||entry.label});groups.set(t.id,items);}}
+ for(const [key,entry]of Object.entries(r.fields)){if(entry.blocked||!entry.value?.trim()||['delivery','internalPart'].includes(key)&&!entry.value)continue;for(const t of requirementTargets(template,key)){if(['date','delivery'].includes(t.key))continue;const items=groups.get(t.id)||[];items.push({key,value:manufacturingFields.has(key)?requirementText(entry.value):entry.value,label:requirementFields[key]||entry.label});groups.set(t.id,items);}}
  for(const t of template.fields){const items=groups.get(t.id);if(!items)continue;values[t.id]=items.map(e=>{if(e.key===t.key||e.key==='internalPart'&&t.key==='part')return e.value;if(e.key==='layers')return /層|L(?:ayer)?s?$/i.test(e.value)?e.value:e.value+' 層';if(e.key==='due')return '交期：'+e.value;return e.label+'：'+e.value;}).join('\n');}
  values.__requirementAppendix=requirementSummary(r);return values;
 }

@@ -1,4 +1,5 @@
 import {parseDocx} from './core.js';
+import {upgradeRequirementImages} from './requirement-images.js';
 import {requirementTargets,requirementMapping,requirementFields} from './requirements.js';
 const compact=s=>String(s||'').replace(/\s/g,'');
 export function remapDraft(old,next,draft){
@@ -19,7 +20,8 @@ export function remapDraft(old,next,draft){
  draft.values=values;delete draft.originalLayoutVersion;
 }
 export async function upgradeWorkspace(state){
- if(state.tableMappingVersion===3)return false;
+ const imagesChanged=await upgradeRequirementImages(state);
+ if(state.tableMappingVersion===3)return imagesChanged;
  for(let i=0;i<state.suppliers.length;i++){const old=state.suppliers[i],p=await parseDocx(Uint8Array.from(atob(old.data),c=>c.charCodeAt(0))),next={...old,fields:p.fields,rows:p.rows};
   for(const f of next.fields){const before=old.fields.find(t=>t.id===f.id&&t.cell===f.cell);if(before&&!f.segment)f.value=before.value;}
   next.name=p.name||next.name;remapDraft(old,next,state.drafts[old.id]);state.suppliers[i]=next;

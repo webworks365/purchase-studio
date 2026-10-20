@@ -45,6 +45,9 @@ function setCellText(cell,value){
  const nearestP=n=>{let p=n.parentNode;while(p&&!(p.namespaceURI===W&&p.localName==='p'))p=p.parentNode;return p;};
  for(let i=0;i<paragraphs.length;i++){
   const p=paragraphs[i],text=i===paragraphs.length-1?lines.slice(i).join('\n'):(lines[i]||'');
+  // Replaced text supplies its own line breaks. Retaining the former wrapping
+  // breaks as well creates empty lines and increases the original table height.
+  for(const n of [...p.getElementsByTagNameNS(W,'br'),...p.getElementsByTagNameNS(W,'cr')])if(nearestP(n)===p&&(!n.getAttributeNS(W,'type')||n.getAttributeNS(W,'type')==='textWrapping'))n.remove();
   let nodes=Array.from(p.getElementsByTagNameNS(W,'t')).filter(t=>nearestP(t)===p);
   if(!nodes.length){if(!text)continue;let r=Array.from(p.children).find(n=>n.localName==='r');if(!r){r=doc.createElementNS(W,'w:r');p.appendChild(r);}const t=doc.createElementNS(W,'w:t');r.appendChild(t);nodes=[t];}
   let remaining=Array.from(text);

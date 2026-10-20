@@ -3,7 +3,10 @@ const xml=s=>new DOMParser().parseFromString(s,'application/xml');
 const mime={png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',bmp:'image/bmp',tif:'image/tiff',tiff:'image/tiff',emf:'image/x-emf',wmf:'image/x-wmf'};
 const hash=async bytes=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))).map(v=>v.toString(16).padStart(2,'0')).join('');
 const identity=/logo|signature|sign[-_ ]?off|簽名|签名|簽核|签核|簽章|签章|印章|用印|核准|審核|审核|公司標誌|公司标志|商標|商标/i;
-export const isAllowedImage=image=>!!image&&!image.excluded&&(image.origin==='upload'||image.kind==='requirement')&&!identity.test(image.description||'');
+export const isAllowedImage=image=>!!image&&!image.excluded&&(image.origin==='upload'||image.kind==='requirement'&&image.policyVersion===2)&&!identity.test(image.description||'');
+const ancestor=(node,name)=>{while(node&&!(node.namespaceURI===W&&node.localName===name))node=node.parentNode;return node;};
+const words=node=>node?Array.from(node.getElementsByTagNameNS(W,'t')).map(t=>t.textContent).join(''):'';
+const signing=/簽名|签名|簽核|签核|簽章|签章|簽字|签字|核准|核準|審核|审核|主管|處理人員|处理人员|製表者|制表者|廠商回簽|approvedby|checkedby|preparedby|signature|signoff/i;
 function base64(bytes){let text='';for(let i=0;i<bytes.length;i+=16384)text+=String.fromCharCode(...bytes.subarray(i,i+16384));return btoa(text);}
 export async function imageFile(file){
  let bytes=new Uint8Array(await file.arrayBuffer()),ext=file.name.split('.').pop().toLowerCase(),width,height;
@@ -19,14 +22,29 @@ export async function documentImages(zip,document){
   const target=rel.getAttribute('Target');const parts=(target.startsWith('/')?target.slice(1):'word/'+target).split('/'),path=[];for(const p of parts){if(p==='..')path.pop();else if(p&&p!=='.')path.push(p);}const file=zip.file(path.join('/'));if(!file)continue;
   const ext=target.split('.').pop().toLowerCase();if(!mime[ext])continue;const bytes=await file.async('uint8array'),key=await hash(bytes);if(images.some(i=>i.id===key))continue;
   let parent=node;while(parent&&parent.localName!=='drawing'&&parent.localName!=='pict')parent=parent.parentNode;const extent=parent?.getElementsByTagNameNS('*','extent')[0];
-  let cell=parent;while(cell&&cell.localName!=='tc')cell=cell.parentNode;const para=node.closest?.('p')||parent?.parentNode;
+  const cell=ancestor(node,'tc'),para=ancestor(node,'p'),row=ancestor(node,'tr');
   const metadata=Array.from(parent?.getElementsByTagName('*')||[]).filter(n=>['docPr','cNvPr'].includes(n.localName)).map(n=>['name','descr','title'].map(k=>n.getAttribute(k)||'').join(' ')).join(' ');
-  const context=(cell?.textContent||'')+' '+(para?.previousElementSibling?.textContent||'');const description=target+' '+metadata;
-  if(identity.test(description)||identity.test(context)||!/規格|製作|制作|板厚|銅厚|铜厚|阻抗|拼板|排版|成型|品質標準|品质标准|檢驗重點|检验重点|出貨附件|出货附件|注意事項|注意事项|包裝|包装|specification|stackup|impedance|panel|fabrication/i.test(context+' '+metadata))continue;
-  images.push({id:key,data:base64(bytes),ext,mime:mime[ext],cx:Number(extent?.getAttribute('cx'))||5000000,cy:Number(extent?.getAttribute('cy'))||2500000,origin:'document',kind:'requirement',description});
+  // Read the enclosing Word paragraph for inline, floating and VML images.
+  // A preceding table is not a caption: it can contain the whole specification.
+  const previous=para?.previousElementSibling,caption=previous?.namespaceURI===W&&previous.localName==='p'?words(previous):'';
+  const local=[words(para),words(cell),words(row)].join(' '),context=local+' '+caption,description=target+' '+metadata;
+  if(signing.test(local.replace(/\s/g,''))||identity.test(description)||identity.test(context)||!/規格|製作|制作|板厚|銅厚|铜厚|阻抗|拼板|排版|成型|品質標準|品质标准|檢驗重點|检验重点|出貨附件|出货附件|注意事項|注意事项|包裝|包装|specification|stackup|impedance|panel|fabrication/i.test(context+' '+metadata))continue;
+  images.push({id:key,data:base64(bytes),ext,mime:mime[ext],cx:Number(extent?.getAttribute('cx'))||5000000,cy:Number(extent?.getAttribute('cy'))||2500000,origin:'document',kind:'requirement',policyVersion:2,description});
  }return images;
 }
 export function combineImages(...groups){return [...new Map(groups.flat().filter(isAllowedImage).map(i=>[i.id,i])).values()];}
+export async function upgradeRequirementImages(state){
+ if(state.requirementImagePolicyVersion===2)return false;
+ const verified=new Map();
+ for(const r of state.requirements||[]){
+  if(r.sourceData&&/\.docx$/i.test(r.name||'')){
+   try{const zip=await JSZip.loadAsync(r.sourceData,{base64:true}),part=zip.file('word/document.xml');r.images=part?await documentImages(zip,xml(await part.async('string'))):[];}catch{r.images=combineImages(r.images||[]);}
+  }else r.images=combineImages(r.images||[]);
+  for(const image of r.images)verified.set(image.id,image);
+ }
+ for(const draft of [...Object.values(state.drafts||{}),...(state.orders||[])])if(draft.values?.__images)draft.values.__images=combineImages(draft.values.__images.map(i=>verified.get(i.id)||i));
+ state.requirementImagePolicyVersion=2;return true;
+}
 export async function insertImages(zip,doc,template,images){
  if(!images?.length)return;
  const existing=new Set();for(const file of Object.values(zip.files).filter(f=>/^word\/media\//.test(f.name)&&!f.dir))existing.add(await hash(await file.async('uint8array')));

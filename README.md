@@ -42,3 +42,6 @@
 文字辨識支援中文及英文欄位名、相鄰／下方文字、合併標題與獨立單位；100PCS、100 PCS 可辨識為數量，每板／排版 PCS 不當成訂購量。無法判定或不同數量互相衝突時保留目前值。
 
 新增驗證：node tests/semantic-intake.test.mjs、node tests/auto-update.test.mjs、node tests/build-release.test.mjs。
+
+
+Word 版型保護：需求文字帶入時會移除 Excel 對齊用的連續空格與 Tab，保留單位和文字換行；替換儲存格文字時清除舊的文字換行，避免重複空白行，不改表格欄寬、字型或段落格式。客戶 Word 圖片以實際段落與表格列辨識，簽核／主管／處理人員區的圖片不帶入，不再將前方整張規格表當成圖片說明。舊工作區會從保留的需求原檔重新檢查圖片，清理草稿與採購紀錄的舊附件；採購單原稿內的圖片不受影響。tests/word-layout.browser.js 提供瀏覽器回歸測試（JSZip 與 public-site 模組環境）。

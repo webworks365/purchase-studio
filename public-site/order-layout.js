@@ -1,6 +1,7 @@
 import {applyDueRequirement,fixedDelivery,dueTarget} from './inline-due.js';
 import {replaceOriginalDue} from './due-date.js';
 import {bisSpareDefault} from './note-format.js';
+import {requirementText,manufacturingFields} from './requirement-text.js';
 import {requirementFields,requirementMapping,requirementTargets} from './requirements.js';
 export const DELIVERY='銘星科技有限公司';
 export function creationDate(iso){return new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Taipei'}).format(new Date(iso)).replaceAll('-','/');}
@@ -30,12 +31,14 @@ export function normalizeDraft(s,draft){
  draft.createdAt??=new Date().toISOString();
  const generated=new Set(['依本採購單「客戶製作要求」附件及已確認之製作檔案執行。','依本採購單之客戶製作要求附件，及本次經確認的供應商交付條款。','依本採購單客戶需求附件及客戶提供之製作檔案執行。','依本採購單客戶需求附件及本次交付條款。']);
  for(const f of s.fields){if(f.key==='date')draft.values[f.id]=creationDate(draft.createdAt);if(f.key==='delivery')draft.values[f.id]=draft.values.__inlineDue?fixedDelivery(draft.values[f.id]):DELIVERY;
+  if(manufacturingFields.has(f.key)&&draft.values[f.id]!==undefined&&draft.values[f.id]!==f.value){const before=draft.values[f.id];draft.values[f.id]=requirementText(before);if(draft.values.__requirementApplied?.values?.[f.id]===before)draft.values.__requirementApplied.values[f.id]=draft.values[f.id];}
   if(['production','notes','notesTail'].includes(f.key)&&generated.has(draft.values[f.id]))draft.values[f.id]=f.value;
  }
  if(draft.bisSpareVersion!==1){bisSpareDefault(s,draft.values);draft.bisSpareVersion=1;}
  if(draft.notesPolicyVersion!==2){removeGeneratedNotes(s,draft.values);draft.notesPolicyVersion=2;}
 }
 function patchCombined(base,key,value){
+ value=requirementText(value);
  if(key==='thickness'&&compact(base).includes(compact(value)))return base;
  const patterns={layers:/(?:PCB\s*)?層數\s*[:：]\s*\d+\s*(?:L(?:ayers?)?|層)?|\b\d+\s*(?:L(?:ayers?)?\b|層)/i,thickness:/(?:成品板厚(?:與公差)?|板厚|厚度|\bT)\s*[:：]?\s*\d+(?:\.\d+)?(?:\s*(?:±|\+\/-)\s*\d+(?:\.\d+)?)?\s*T?\s*(?:mm|mil|inch)?|\b\d+(?:\.\d+)?(?:\s*(?:±|\+\/-)\s*\d+(?:\.\d+)?)?\s*(?:mm|mil|inch)/i};
  if(key==='material'){if(/^FR-?4$/i.test(value.trim())&&/^FR-?4(?:\b|TG)/i.test(base.trim()))return base;if(/[／/]/.test(value))return value;const first=base.search(/[／/]/);if(first>=0)return value+base.slice(first);const at=base.search(/\b\d+\s*L\b|(?:板厚|厚度|\bT)\s*\d/i);return at>0?value+' '+base.slice(at):value;}
