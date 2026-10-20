@@ -5,6 +5,7 @@ function block(r,key,detail){const f=r.fields[key];if(!f)return;f.blocked=true;f
 // Split a known combined field once. Never infer a manufacturing unit or resolve contradictory specs.
 export function normalizeIntake(r){
  const q=r.fields.quantity;if(q){const parts=splitQuantityDue(q.value);if(parts.rawDue){q.value=parts.quantity;if(!q.blocked)derived(r,'due','需求交期',parts.rawDue.replace(/^交期\s*[:：]?\s*/,''),q);}}
+ if(q&&!q.blocked&&!/(?:PCS|PIECES?|SETS?|PNL|PANELS?)\b|片|套|個|个/i.test(q.value))block(r,'quantity','數量未明示單位，保留目前值，不自行換算');
  const material=r.fields.material;
  if(material&&/(?:PCB\s*層數|成品板厚與公差)\s*[:：]/.test(material.value)){
   const raw=material.value,layerValues=unique([...raw.matchAll(/(?:PCB\s*)?層數\s*[:：]\s*(\d+)\s*(?:L(?:ayers?)?|層)?/gi)].map(m=>m[1]));

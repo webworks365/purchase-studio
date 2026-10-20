@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import {createUpdateMonitor} from '../public-site/auto-update.js';
+let version='aaaaaaa',ready=false,refreshes=[];
+const monitor=createUpdateMonitor({currentVersion:version,fetchVersion:async()=>version,prepare:async()=>ready,refresh:v=>refreshes.push(v)});
+await monitor.check();assert.equal(refreshes.length,0);
+version='invalid';await monitor.check();assert.equal(refreshes.length,0);
+version='bbbbbbb';await monitor.check();assert.equal(refreshes.length,0);
+ready=true;await Promise.all([monitor.check(),monitor.check()]);assert.deepEqual(refreshes,['bbbbbbb']);
+await monitor.check();assert.equal(refreshes.length,1);
+let attempts=0;
+const retry=createUpdateMonitor({currentVersion:'aaaaaaa',fetchVersion:async()=>{if(!attempts++)throw Error('offline');return 'ccccccc';},prepare:async()=>true,refresh:v=>refreshes.push(v)});
+await retry.check();assert.equal(refreshes.length,1);await retry.check();assert.equal(refreshes.at(-1),'ccccccc');
+let saved=false;
+const storage=createUpdateMonitor({currentVersion:'aaaaaaa',fetchVersion:async()=>'ddddddd',prepare:async()=>{if(!saved)throw Error('storage');return true;},refresh:v=>refreshes.push(v)});
+await storage.check();assert.equal(refreshes.length,2);saved=true;await storage.check();assert.equal(refreshes.at(-1),'ddddddd');
+console.log('Update monitor: version checks, deferred refresh, concurrency and error recovery passed');

@@ -11,3 +11,5 @@
 *.tar.gz
 .env
 .env.*
+
+/site-release/

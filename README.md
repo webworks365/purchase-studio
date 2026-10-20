@@ -28,10 +28,17 @@
 
 ## GitHub Pages
 
-推送 main 後，.github/workflows/pages.yml 只部署 public-site。GitHub 不保存採購內容。不要把真實原稿、進度表、備份或含資料的 samples.json 提交到 GitHub。公開的 samples.json 保持 files 空陣列。
+推送 main 後，.github/workflows/pages.yml 將 public-site 編譯成 site-release 後部署。GitHub 不保存採購內容。不要把真實原稿、進度表、備份或含資料的 samples.json 提交到 GitHub。公開的 samples.json 保持 files 空陣列。
 
 ## 驗證
 
 執行 node tests/cloud-sync.test.mjs，涵蓋移轉、校驗、跨裝置更新、離線重試、版本衝突、編輯保護與未知連結隔離。
 
 需求辨識測試：node tests/intake.test.mjs。Excel 工單依欄位名稱、成品區塊和勾選項目辨識；不使用固定儲存格位置、不以排版 PCS 當作訂購數量，也不把客戶料號代入銘星料號。缺少或矛盾的欄位保留目前值，並在上傳結果中顯示。重複上傳相同文件會更新原需求紀錄，不重複增加附件；保留草稿識別碼與原 Word 表格版型。
+
+
+每次部署以 Git commit SHA 標記版本，HTML 與本機 JS 模組、CSS 都帶版本參數。背景每 30 秒、回到視窗或網路恢復時檢查 version.json；有新版先存草稿並等雲端同步，文件處理中、對話框開啟、公司設定未存或離線待同步時暫緩刷新。刷新保留專屬工作區連結。舊版首次需 Ctrl＋F5 載入更新器，以後自動更新。
+
+文字辨識支援中文及英文欄位名、相鄰／下方文字、合併標題與獨立單位；100PCS、100 PCS 可辨識為數量，每板／排版 PCS 不當成訂購量。無法判定或不同數量互相衝突時保留目前值。
+
+新增驗證：node tests/semantic-intake.test.mjs、node tests/auto-update.test.mjs、node tests/build-release.test.mjs。

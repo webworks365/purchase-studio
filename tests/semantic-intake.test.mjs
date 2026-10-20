@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import {semanticText,semanticGrid} from '../public-site/semantic-intake.js';
+const value=(items,key)=>items.find(c=>c.key===key)?.value;
+for(const text of ['100PCS','100 PCS','數量 100PCS','Order Qty 100 PCS','訂購數量：100PCS'])assert.match(value(semanticText(text),'quantity'),/100\s*PCS/);
+assert.equal(value(semanticText('每板4PCS'),'quantity'),undefined);
+assert.equal(value(semanticText('100PCS\n200PCS'),'quantity'),undefined);
+assert.equal(value(semanticText('Order Qty 100 PCS\n每板4PCS'),'quantity'),'100 PCS');
+assert.equal(value(semanticText('Customer Part No: ABC-123\n銘星料號：M056D6025A2'),'customerPart'),'ABC-123');
+assert.equal(value(semanticText('訂購數量\n100\nPCS'),'quantity'),'100 PCS');
+const cells=[{addr:'D7',value:'Order Qty'},{addr:'E7',value:'250'},{addr:'F7',value:'PCS'},{addr:'D10',value:'Customer Part No'},{addr:'D11',value:'NEW-001'}];
+assert.equal(value(semanticGrid(cells),'quantity'),'250 PCS');assert.equal(value(semanticGrid(cells),'customerPart'),'NEW-001');
+assert.equal(value(semanticGrid([{addr:'C2',value:'Order Qty'},{addr:'D3',value:'80PCS'}],{merges:['C2:D2']}),'quantity'),'80PCS');
+assert.equal(value(semanticGrid([{addr:'A1',value:'100PCS',reference:true}]),'quantity'),undefined);
+assert.equal(value(semanticGrid([{addr:'P2',value:'X PNL'},{addr:'P3',value:'4 PCS'}]),'quantity'),undefined);
+console.log('Text recognition: labels, PCS, separate units, merged headers and panel exclusions passed');

@@ -1,4 +1,5 @@
 import {readManufacturingCells} from './xlsx-intake.js';
+import {semanticText,semanticGrid} from './semantic-intake.js';
 import {documentImages} from './requirement-images.js';
 import {normalizeIntake} from './normalize-intake.js';
 // Requirement review is deterministic and source based. It does not execute document instructions.
@@ -14,6 +15,7 @@ const mandatory=['customerPart','quantity','layers','material','thickness','copp
 function field(r,key,value,evidence,ambiguity=''){
  value=trim(value);if(!value)return;
  if(r.fields[key]&&r.fields[key].value!==value){r.fields[key].blocked=true;r.fields[key].ambiguity='文件同欄位有不同內容，保留目前值';r.issues.push({id:'duplicate-'+key+'-'+r.issues.length,severity:'block',field:key,title:requirementFields[key]+'出現不同內容',detail:r.fields[key].value+' ／ '+value,source:evidence.locator});return;}
+ if(r.fields[key]){r.fields[key].evidence.push(evidence);if(ambiguity&&!r.fields[key].ambiguity)r.fields[key].ambiguity=ambiguity;return;}
  r.fields[key]={key,label:requirementFields[key],value,evidence:[evidence],origin:'source',ambiguity,note:''};
 }
 function evidence(source,locator,raw){return {file:source,locator,raw};}
@@ -32,6 +34,8 @@ function paragraphText(p){
 }
 function fresh(name,type,text){return {id:crypto.randomUUID(),name,type,text,fields:{},issues:[],resolutions:{},approved:false,appliedSupplier:null,attachments:[],createdAt:new Date().toISOString()};}
 function fromText(r){
+ const semantic=semanticText(r.text).filter(c=>c.key!=='notes'),missing=new Set(semantic.filter(c=>!r.fields[c.key]).map(c=>c.key));
+ for(const candidate of semantic)if(missing.has(candidate.key)){const value=selectedOptions(candidate.value);if(value)field(r,candidate.key,value,evidence(r.name,candidate.locator,candidate.value));}
  const rules={customerPart:/(?:^|\n)\s*(?:客戶料號|產品料號|料號)\s*[:：]\s*([^\s\n]+)/,internalPart:/(?:^|\n)\s*(?:銘星料號|本公司料號)\s*[:：]\s*([^\s\n]+)/,layers:/(?:^|\n)\s*(?:PCB層數|層數)\s*[:：]\s*(\d+\s*(?:Layer|層)?)/i,quantity:/(?:^|\n)\s*(?:PCB需求量|訂購數量)\s*[:：]\s*([^\n]+)/,material:/(?:^|\n)\s*(?:PCB原料材質|材料板厚|材料規格|材質)\s*[:：]\s*([^\n]+)/,thickness:/(?:^|\n)\s*(?:PCB厚度|成品板厚|板厚)\s*[:：]\s*([^\n]+)/,copper:/(?:^|\n)\s*(?:成品銅厚|銅厚)\s*[:：]\s*([^\n]+)/,finish:/(?:^|\n)\s*(?:PCB電鍍型態|表面處理)\s*[:：]\s*([^\n]+)/,mask:/(?:^|\n)\s*防焊\s*[:：]\s*([^\n]+)/,due:/(?:^|\n)\s*(?:需求日期|交期)\s*[:：]\s*([^\n]+)/};
  const extra={notes:'(?:重要|特別)?備註',legend:'文字(?:顏色|面別)?',inspection:'檢驗(?:標準|依據)',ul:'UL\\s*(?:MARK|文字|標記)',size:'(?:PCB尺寸大小|成品尺寸)',panel:'(?:排版成型|拼板|連板)',stackup:'(?:板層面順序|層疊順序|疊構)',via:'(?:導通孔處理|塞孔)',baseCopper:'(?:原始基銅|基銅)',gerber:'Gerber(?:\\s*Files|版本)?',marking:'(?:LOGO|週期標記)',impedance:'阻抗',reports:'(?:測試報告|隨貨文件)',revision:'版本',project:'專案編號',origin:'(?:產品產地文字|產地文字)',special:'(?:特殊需求附加說明|特殊需求)'};
  for(const [key,label]of Object.entries(extra))rules[key]=new RegExp('(?:^|\\n)\\s*(?:'+label+')\\s*[:：]\\s*([^\\n]+)','i');
@@ -50,6 +54,8 @@ export async function readRequirementDocx(data,name){
  if(!checklist)for(const f of p.fields){const map={notes:'notes',customerPart:'customerPart',part:'internalPart',quantity:'quantity',material:'material',layers:'layers',thickness:'thickness',copper:'copper',baseCopper:'baseCopper',mask:'mask',legend:'legend',finish:'finish',inspection:'inspection',ul:'ul',size:'size',panel:'panel',stackup:'stackup',via:'via',impedance:'impedance',reports:'reports',revision:'revision',project:'project'};const key=f.key==='part'&&!/銘星|本公司|內部/.test(f.label)?null:map[f.key];if(key&&f.value){field(r,key,['mask','legend','finish'].includes(key)?selectedOptions(f.value):f.value,evidence(name,'Word 儲存格 '+(f.cell+1),f.value));nativeKeys.add(key);}}
  const aliases={notes:['備註','重要備註','特別備註'],customerPart:['產品料號','客戶料號'],internalPart:['銘星料號','本公司料號'],revision:['版本Version','版本'],project:['專案編號'],quantity:['PCB需求量','訂購數量'],layers:['PCB層數'],material:['PCB原料材質'],thickness:['PCB厚度'],temperature:['PCB溫度'],copper:['內、外層成品銅厚','銅厚'],finish:['PCB電鍍型態','表面處理'],mask:['防焊'],legend:['文字'],size:['PCB尺寸大小'],panel:['排版成型'],stackup:['板層面順序'],via:['PCBVIAHOLD'],ul:['UL文字','ULMARK'],origin:['產品產地文字'],goldfinger:['PCB含金手指'],reports:['文字需求'],special:['特殊需求附加說明'],stencil:['SMT加工鋼模'],gerber:['GerberFiles'],due:['需求日期'],delivery:['交貨地點'],inspection:['檢驗標準']};
  for(const row of rows){for(let i=0;i<row.cells.length-1;i++)for(const[key,names]of Object.entries(aliases))if(!nativeKeys.has(key)&&names.some(n=>clean(n)===clean(row.cells[i]))){const raw=row.cells[i+1],value=selectedOptions(raw);if(value)field(r,key,value,evidence(name,row.locator+`／儲存格 ${i+2}`,raw));}}
+ const semanticCells=rows.flatMap((row,i)=>row.cells.map((value,j)=>({value,row:i,col:j}))),generic=semanticGrid(semanticCells),unmapped=new Set(generic.filter(c=>!r.fields[c.key]).map(c=>c.key));
+ for(const candidate of generic)if(unmapped.has(candidate.key)){const value=selectedOptions(candidate.value);if(value)field(r,candidate.key,value,evidence(name,candidate.locator,candidate.value));}
  fromText(r);
  if(checklist){
   r.issues.push({id:'checklist-only',severity:'block',title:'Layout 檢查表不是完整製造規格',detail:'只提取明確的料號與層數。檢查項目的完成符號、設計通則與問句不視為本次製作要求；請補齊製作申請單／Gerber 規格。',source:'文件標題'});
@@ -78,7 +84,7 @@ export async function readRequirementXlsx(data,name){
   const x=parseXml(await zip.file(path).async('string')),reference=/加註|符號|範例|備忘錄|參考|^(?:其它|其他|圖庫)$/.test(title)||s.getAttribute('state')==='hidden';
   const area=areas.find(a=>+a.getAttribute('localSheetId')===si)?.textContent,maxColumn=area?.match(/:\$?([A-Z]+)\$?\d+/)?.[1];
   const cells=els(x,'c',S).map(c=>{const addr=c.getAttribute('r'),t=c.getAttribute('t'),v=els(c,'v',S)[0]?.textContent;let value=t==='s'?strings[+v]:t==='inlineStr'?plain(c):v||'';return {addr,value:trim(value),formula:els(c,'f',S)[0]?.textContent,reference:reference||(maxColumn&&colIndex(addr.match(/^[A-Z]+/)[0])>colIndex(maxColumn))};}).filter(c=>c.value||c.formula);
-  const byAddr=Object.fromEntries(cells.map(c=>[c.addr,c]));const sheet={name:title,path,reference,cells,shapes:[],lines:0};
+  const byAddr=Object.fromEntries(cells.map(c=>[c.addr,c]));const sheet={name:title,path,reference,cells,merges:els(x,'mergeCell',S).map(m=>m.getAttribute('ref')),shapes:[],lines:0};
   if(!reference)for(const c of cells.filter(c=>!c.reference)){const inline=c.value.match(/^(?:重要|特別)?備註\s*[:：]\s*([\s\S]+)$/);if(inline)field(r,'notes',inline[1],evidence(name,title+'!'+c.addr,c.value));else if(/^(?:重要|特別)?備註\s*[:：]?$/.test(c.value)){const row=c.addr.match(/\d+$/)[0],col=colIndex(c.addr.match(/^[A-Z]+/)[0]),next=cells.filter(n=>!n.reference&&n.addr.match(/\d+$/)[0]===row&&colIndex(n.addr.match(/^[A-Z]+/)[0])>col).sort((a,b)=>colIndex(a.addr.match(/^[A-Z]+/)[0])-colIndex(b.addr.match(/^[A-Z]+/)[0]))[0];if(next)field(r,'notes',next.value,evidence(name,title+'!'+c.addr+':'+next.addr,next.value));}}
   const prefix=path.slice(0,path.lastIndexOf('/')),filename=path.slice(path.lastIndexOf('/')+1),sr=await relationships(zip,prefix+'/_rels/'+filename+'.rels');
   for(const d of els(x,'drawing',S)){const target=sr[d.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships','id')],dp=target&&resolvePath(prefix,target);if(!dp||!zip.file(dp))continue;const dx=parseXml(await zip.file(dp).async('string'));for(const anchor of Array.from(dx.documentElement.children)){const tx=els(anchor,'t',A).map(n=>n.textContent).join(''),from=els(anchor,'from')[0],row=Number(els(from||anchor,'row')[0]?.textContent)+1,col=Number(els(from||anchor,'col')[0]?.textContent)+1;const kind=els(anchor,'prstGeom')[0]?.getAttribute('prst');if(kind==='line')sheet.lines++;if(tx)sheet.shapes.push({text:tx,row,col,reference:reference||(maxColumn&&col>colIndex(maxColumn))});}}
@@ -86,6 +92,9 @@ export async function readRequirementXlsx(data,name){
   if(reference)continue;
   for(const c of cells.filter(c=>!c.reference&&c.formula))r.issues.push({id:'formula-'+si+'-'+c.addr,severity:'block',title:'公式快取尚未重算',detail:'此處僅讀取 Excel 儲存值，不執行公式；請以 Excel 重算後確認。',source:title+'!'+c.addr});
   readManufacturingCells(sheet,(key,value,addr,ambiguity='')=>field(r,key,value,evidence(name,title+'!'+addr,value),ambiguity),selectedOptions);
+  const generic=semanticGrid(cells,{merges:sheet.merges}),missing=new Set(generic.filter(c=>!r.fields[c.key]).map(c=>c.key));
+  for(const candidate of generic)if(missing.has(candidate.key)){const value=selectedOptions(candidate.value);if(value)field(r,candidate.key,value,evidence(name,title+'!'+candidate.locator,candidate.value));}
+  for(const shape of sheet.shapes.filter(s=>!s.reference))for(const candidate of semanticText(shape.text,{inferQuantity:false}))if(!r.fields[candidate.key])field(r,candidate.key,candidate.value,evidence(name,title+'／文字方塊',shape.text));
   if(/流程表反面/.test(title)){
    const put=(key,value,addr,ambiguity='')=>{if(value)field(r,key,value,evidence(name,title+'!'+addr,value),ambiguity);};
    const markings=cells.filter(c=>/^([A-K])(3[2-6])$/.test(c.addr)).map(c=>c.value).join(' ');put('marking',markings,'A32:K36','LOGO、週期與文字有圖形覆蓋／標記，需確認適用項目。');
