@@ -1,0 +1,39 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // The 256-bit URL fragment is a bearer capability. Never allow enumeration.
+    function linkAccess(key) {
+      return request.auth != null && key.matches('^[A-Za-z0-9_-]{43}$');
+    }
+    function validHeader() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['format','version','revision','chunks','checksum','updatedAt'])
+        && d.keys().hasAll(['format','version','revision','chunks','checksum','updatedAt'])
+        && d.format == 1 && d.version is int && d.version > 0
+        && d.revision is string && d.revision.matches('^[a-f0-9-]{36}$')
+        && d.chunks is int && d.chunks > 0 && d.chunks <= 280
+        && d.checksum is string && d.checksum.matches('^[a-f0-9]{64}$')
+        && d.updatedAt == request.time;
+    }
+    match /purchaseWorkspaces/{key} {
+      allow get: if linkAccess(key);
+      allow list: if false;
+      allow create: if linkAccess(key) && validHeader() && request.resource.data.version == 1;
+      allow update: if linkAccess(key) && validHeader()
+        && request.resource.data.version == resource.data.version + 1
+        && request.resource.data.revision != resource.data.revision;
+      allow delete: if false;
+      match /versions/{revision}/chunks/{index} {
+        allow get: if linkAccess(key);
+        allow list, update: if false;
+        allow create: if linkAccess(key) && revision.matches('^[a-f0-9-]{36}$')
+          && index.matches('^[0-9]{4}$')
+          && request.resource.data.keys().hasOnly(['data'])
+          && request.resource.data.data is string && request.resource.data.data.size() <= 500000;
+        allow delete: if linkAccess(key)
+          && (!exists(/databases/$(database)/documents/purchaseWorkspaces/$(key))
+            || get(/databases/$(database)/documents/purchaseWorkspaces/$(key)).data.revision != revision);
+      }
+    }
+  }
+}
