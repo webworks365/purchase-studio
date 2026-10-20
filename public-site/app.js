@@ -5,7 +5,7 @@ import {dueTarget,transferDue} from './inline-due.js';
 import {createWordEditor} from './word-editor.js';
 import {imageFile,combineImages,isAllowedImage} from './requirement-images.js';
 import {upgradeWorkspace,replaceSupplierTemplate} from './template-update.js';
-import {DELIVERY,creationDate,supplierDisplay,formRows,supplementalRows,normalizeDraft,intakeValues} from './order-layout.js';
+import {DELIVERY,creationDate,supplierDisplay,formRows,supplementalRows,normalizeDraft,intakeValues,intakeReport} from './order-layout.js';
 import {readRequirementDocx,readRequirementXlsx,readRequirementText,requirementMapping} from './requirements.js';
 import {normalizeDueDate,splitQuantityDue,quantityWithDue} from './due-date.js';
 import {orderPrefix,formatOrderNumber,validOrderNumber} from './order-number.js';
@@ -64,8 +64,8 @@ function bindCreate(){
  $('#export-word').onclick=()=>generate();
 }
 function applySimpleRequirement(r,suffix=draft?.orderSuffix||''){
- const s=template();if(!s)return;const previous=draft?.values||{},createdAt=draft?.createdAt||new Date().toISOString();
- draft=newDraft(s);draft.createdAt=createdAt;draft.orderSuffix=suffix;Object.assign(draft.values,intakeValues(r,s,previous));draft.values.__images=combineImages(previous.__images||[],r.images||[]);draft.originalLayoutVersion=1;
+ const s=template();if(!s)return;const previousDraft=draft,previous=draft?.values||{},createdAt=draft?.createdAt||new Date().toISOString();
+ draft=newDraft(s);if(previousDraft)draft.id=previousDraft.id;draft.createdAt=createdAt;draft.orderSuffix=suffix;Object.assign(draft.values,intakeValues(r,s,previous));draft.values.__images=combineImages(draft.values.__images||[],r.images||[]);draft.originalLayoutVersion=1;
  normalizeDraft(s,draft);initializeDueDate();draft.requirementId=r.id;activeReq=r.id;refreshOrderNumber();dirty=true;scheduleAutoSave();
 }
 
@@ -73,7 +73,7 @@ function applyExtracted(extracted){if(!draft)return;let n=0;for(const f of templ
 function status(s){const el=$('#scan-status');if(el)el.textContent=s;}
 async function processFiles(files){
  if(busy)return;
- for(const file of Array.from(files||[]))await processFile(file);
+ for(const file of Array.from(files||[]))await processFile(file);const input=$('#source-file');if(input)input.value='';
 }
 async function processFile(file){
  if(!file||busy)return;if(!template()){toast('請先新增供應商模板');return;}if(file.size>20*1024*1024){toast('檔案超過 20 MB，請分割後上傳');return;}
@@ -88,7 +88,18 @@ async function processFile(file){
    if(pdf.numPages>15){await pdf.destroy();throw Error('PDF 超過 15 頁，請先擷取與需求有關的頁面。');}
    try{for(let i=1;i<=pdf.numPages;i++){status('讀取 PDF 第 '+i+' / '+pdf.numPages+' 頁…');const p=await pdf.getPage(i),tc=await p.getTextContent();let pt=tc.items.map(t=>t.str+(t.hasEOL?'\n':' ')).join('');if(pt.trim().length<20)pt='';text+=pt+'\n';}}finally{await pdf.destroy();}const images=r?.images||[];r=readRequirementText(text,file.name);r.images=images;
   }else throw Error('支援 DOCX、XLSX、PDF、圖片及 TXT。');
-  if(!r.text.trim()&&!r.images?.length)throw Error('沒有取得可用內容，請檢查檔案。');r.sourceData=bytes64(bytes);state.requirements.push(r);applySimpleRequirement(r);scan={text:r.text,message:file.name+(r.images?.length?'（保留 '+r.images.length+' 張原圖）':'')};state.drafts[selected]=structuredClone(draft);await save();renderCreate();toast('已直接套入 '+template().short+' 採購單');
+  if(!r.text.trim()&&!r.images?.length)throw Error('沒有取得可用內容，請檢查檔案。');
+  const before=structuredClone(draft.values),candidate=intakeValues(r,template(),before),initial=intakeReport(r,template(),before,candidate);
+  if(!initial.recognized&&!r.images?.length){const message=initial.blocked.length?'未套用：'+initial.blocked.join('、')+'不明確，保留目前內容':'已讀到文字，但未辨識到採購單對應欄位；目前內容未變更';status(message);toast(message);return;}
+  r.sourceDigest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),b=>b.toString(16).padStart(2,'0')).join('');
+  r.sourceData=bytes64(bytes);const duplicate=state.requirements.findIndex(q=>q.sourceDigest===r.sourceDigest);if(duplicate>=0){r.id=state.requirements[duplicate].id;r.createdAt=state.requirements[duplicate].createdAt;state.requirements[duplicate]=r;}else state.requirements.push(r);
+  applySimpleRequirement(r);const report=intakeReport(r,template(),before,draft.values),updated=[...new Set(report.changed)];
+  let message=updated.length?'已更新：'+updated.join('、'):report.recognized?'已讀取，對應欄位與目前內容相同':'已讀取需求圖片';
+  if(r.images?.length)message+='；保留 '+r.images.length+' 張原圖';
+  if(report.blocked.length)message+='；'+report.blocked.join('、')+'不明確，保留目前值';
+  if(r.type==='Excel 工程流程單'&&!r.fields.quantity)message+='；工單未列訂購量，保留目前值';
+  scan={text:r.text,message:file.name+'｜'+message};state.drafts[selected]=structuredClone(draft);await save();dirty=false;renderCreate();toast(message);
+
  }catch(e){status('分析未完成：'+e.message);toast('分析未完成：'+e.message);}finally{busy=false;document.body.classList.remove('busy');}
 }
 

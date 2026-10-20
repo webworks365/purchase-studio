@@ -1,4 +1,6 @@
+import {readManufacturingCells} from './xlsx-intake.js';
 import {documentImages} from './requirement-images.js';
+import {normalizeIntake} from './normalize-intake.js';
 // Requirement review is deterministic and source based. It does not execute document instructions.
 import {W,parseXml,parseDocx} from './core.js';
 const S='http://schemas.openxmlformats.org/spreadsheetml/2006/main';
@@ -11,13 +13,13 @@ export const requirementFields={customerPart:'客戶產品料號',internalPart:'
 const mandatory=['customerPart','quantity','layers','material','thickness','copper','finish','mask','due'];
 function field(r,key,value,evidence,ambiguity=''){
  value=trim(value);if(!value)return;
- if(r.fields[key]&&r.fields[key].value!==value){r.issues.push({id:'duplicate-'+key+'-'+r.issues.length,severity:'block',title:requirementFields[key]+'出現不同內容',detail:r.fields[key].value+' ／ '+value,source:evidence.locator});return;}
+ if(r.fields[key]&&r.fields[key].value!==value){r.fields[key].blocked=true;r.fields[key].ambiguity='文件同欄位有不同內容，保留目前值';r.issues.push({id:'duplicate-'+key+'-'+r.issues.length,severity:'block',field:key,title:requirementFields[key]+'出現不同內容',detail:r.fields[key].value+' ／ '+value,source:evidence.locator});return;}
  r.fields[key]={key,label:requirementFields[key],value,evidence:[evidence],origin:'source',ambiguity,note:''};
 }
 function evidence(source,locator,raw){return {file:source,locator,raw};}
 export function selectedOptions(value){
  // Read only explicitly selected options. Absence of a tick is not a negative answer.
- const matches=[...value.matchAll(/[■☑☒]\s*([^□■☑☒☐]+)/g)];
+ value=String(value||'').replace(/[\uE000-\uF8FF]/g,'□');const matches=[...value.matchAll(/[■☑☒█]\s*([^□■☑☒☐█]+)/g)];
  if(matches.length)return matches.map(m=>m[1].trim()).filter(Boolean).join('；');
  return /[□☐]/.test(value)?'':trim(value);
 }
@@ -30,12 +32,12 @@ function paragraphText(p){
 }
 function fresh(name,type,text){return {id:crypto.randomUUID(),name,type,text,fields:{},issues:[],resolutions:{},approved:false,appliedSupplier:null,attachments:[],createdAt:new Date().toISOString()};}
 function fromText(r){
- const rules={customerPart:/(?:^|\n)\s*(?:客戶料號|產品料號|料號)\s*[:：]\s*([^\s\n]+)/,internalPart:/(?:銘星料號|本公司料號)\s*[:：]\s*([^\s\n]+)/,layers:/(?:PCB層數|層數)\s*[:：]\s*(\d+\s*(?:Layer|層)?)/i,quantity:/(?:PCB需求量|訂購數量)\s*[:：]\s*([^\n]+)/,material:/(?:PCB原料材質|材料板厚|材料規格|材質)\s*[:：]\s*([^\n]+)/,thickness:/(?:PCB厚度|成品板厚|板厚)\s*[:：]\s*([^\n]+)/,copper:/(?:成品銅厚|銅厚)\s*[:：]\s*([^\n]+)/,finish:/(?:PCB電鍍型態|表面處理)\s*[:：]\s*([^\n]+)/,mask:/防焊\s*[:：]\s*([^\n]+)/,due:/(?:需求日期|交期)\s*[:：]\s*([^\n]+)/};
+ const rules={customerPart:/(?:^|\n)\s*(?:客戶料號|產品料號|料號)\s*[:：]\s*([^\s\n]+)/,internalPart:/(?:^|\n)\s*(?:銘星料號|本公司料號)\s*[:：]\s*([^\s\n]+)/,layers:/(?:^|\n)\s*(?:PCB層數|層數)\s*[:：]\s*(\d+\s*(?:Layer|層)?)/i,quantity:/(?:^|\n)\s*(?:PCB需求量|訂購數量)\s*[:：]\s*([^\n]+)/,material:/(?:^|\n)\s*(?:PCB原料材質|材料板厚|材料規格|材質)\s*[:：]\s*([^\n]+)/,thickness:/(?:^|\n)\s*(?:PCB厚度|成品板厚|板厚)\s*[:：]\s*([^\n]+)/,copper:/(?:^|\n)\s*(?:成品銅厚|銅厚)\s*[:：]\s*([^\n]+)/,finish:/(?:^|\n)\s*(?:PCB電鍍型態|表面處理)\s*[:：]\s*([^\n]+)/,mask:/(?:^|\n)\s*防焊\s*[:：]\s*([^\n]+)/,due:/(?:^|\n)\s*(?:需求日期|交期)\s*[:：]\s*([^\n]+)/};
  const extra={notes:'(?:重要|特別)?備註',legend:'文字(?:顏色|面別)?',inspection:'檢驗(?:標準|依據)',ul:'UL\\s*(?:MARK|文字|標記)',size:'(?:PCB尺寸大小|成品尺寸)',panel:'(?:排版成型|拼板|連板)',stackup:'(?:板層面順序|層疊順序|疊構)',via:'(?:導通孔處理|塞孔)',baseCopper:'(?:原始基銅|基銅)',gerber:'Gerber(?:\\s*Files|版本)?',marking:'(?:LOGO|週期標記)',impedance:'阻抗',reports:'(?:測試報告|隨貨文件)',revision:'版本',project:'專案編號',origin:'(?:產品產地文字|產地文字)',special:'(?:特殊需求附加說明|特殊需求)'};
  for(const [key,label]of Object.entries(extra))rules[key]=new RegExp('(?:^|\\n)\\s*(?:'+label+')\\s*[:：]\\s*([^\\n]+)','i');
  delete rules.notes;
  if(!r.fields.notes){const lines=r.text.split('\n'),at=lines.findIndex(line=>/^\s*(?:重要|特別)?備註\s*[:：]/.test(line));if(at>=0){const note=[lines[at].replace(/^\s*(?:重要|特別)?備註\s*[:：]\s*/,'')];for(const line of lines.slice(at+1)){if(!line.trim()||/^\s*[^：:\n]{1,32}[:：]/.test(line)&&!/^\s*(?:打叉方式|測試章|包裝方式)\s*[:：]/.test(line))break;note.push(line);}if(note.join('\n').trim())field(r,'notes',note.join('\n'),evidence(r.name,'備註段落',note.join('\n')));}}
- for(const[k,re]of Object.entries(rules)){const m=r.text.match(re);if(m&&!r.fields[k]){const v=selectedOptions(m[1]);if(v)field(r,k,v,evidence(r.name,'文字段落',m[0]));}}
+ for(const[k,re]of Object.entries(rules))if(!r.fields[k])for(const m of r.text.matchAll(new RegExp(re.source,re.flags+'g'))){const v=selectedOptions(m[1]);if(v)field(r,k,v,evidence(r.name,'文字段落',m[0]));}
 }
 export async function readRequirementDocx(data,name){
  const p=await parseDocx(data),x=parseXml(p.xml),paras=els(x,'p',W).map(paragraphText),text=paras.join('\n');
@@ -44,11 +46,11 @@ export async function readRequirementDocx(data,name){
  if(archive.file('word/comments.xml')){const cx=parseXml(await archive.file('word/comments.xml').async('string'));if(els(cx,'comment',W).length){r.issues.push({id:'document-comments',severity:'block',title:'Word 含有批註，需確認是否有額外需求',detail:els(cx,'comment',W).map(c=>els(c,'t',W).map(t=>t.textContent).join('')).join('\n'),source:'Word 批註'});}}
  if(els(x,'ins',W).length||els(x,'del',W).length)r.issues.push({id:'tracked-revisions',severity:'block',title:'Word 含有追蹤修訂',detail:'需確認接受哪些新增／刪除內容後，才能指定生產版本。',source:'Word 修訂標記'});
  const rows=els(x,'tr',W).map((row,i)=>({locator:`Word 表格列 ${i+1}`,cells:Array.from(row.children).filter(n=>n.localName==='tc').map(c=>els(c,'p',W).map(paragraphText).join('\n').trim())}));
+ const nativeKeys=new Set();
+ if(!checklist)for(const f of p.fields){const map={notes:'notes',customerPart:'customerPart',part:'internalPart',quantity:'quantity',material:'material',layers:'layers',thickness:'thickness',copper:'copper',baseCopper:'baseCopper',mask:'mask',legend:'legend',finish:'finish',inspection:'inspection',ul:'ul',size:'size',panel:'panel',stackup:'stackup',via:'via',impedance:'impedance',reports:'reports',revision:'revision',project:'project'};const key=f.key==='part'&&!/銘星|本公司|內部/.test(f.label)?null:map[f.key];if(key&&f.value){field(r,key,['mask','legend','finish'].includes(key)?selectedOptions(f.value):f.value,evidence(name,'Word 儲存格 '+(f.cell+1),f.value));nativeKeys.add(key);}}
  const aliases={notes:['備註','重要備註','特別備註'],customerPart:['產品料號','客戶料號'],internalPart:['銘星料號','本公司料號'],revision:['版本Version','版本'],project:['專案編號'],quantity:['PCB需求量','訂購數量'],layers:['PCB層數'],material:['PCB原料材質'],thickness:['PCB厚度'],temperature:['PCB溫度'],copper:['內、外層成品銅厚','銅厚'],finish:['PCB電鍍型態','表面處理'],mask:['防焊'],legend:['文字'],size:['PCB尺寸大小'],panel:['排版成型'],stackup:['板層面順序'],via:['PCBVIAHOLD'],ul:['UL文字','ULMARK'],origin:['產品產地文字'],goldfinger:['PCB含金手指'],reports:['文字需求'],special:['特殊需求附加說明'],stencil:['SMT加工鋼模'],gerber:['GerberFiles'],due:['需求日期'],delivery:['交貨地點'],inspection:['檢驗標準']};
- for(const row of rows){for(let i=0;i<row.cells.length-1;i++)for(const[key,names]of Object.entries(aliases))if(names.some(n=>clean(n)===clean(row.cells[i]))){const raw=row.cells[i+1],value=selectedOptions(raw);if(value)field(r,key,value,evidence(name,row.locator+`／儲存格 ${i+2}`,raw));}}
+ for(const row of rows){for(let i=0;i<row.cells.length-1;i++)for(const[key,names]of Object.entries(aliases))if(!nativeKeys.has(key)&&names.some(n=>clean(n)===clean(row.cells[i]))){const raw=row.cells[i+1],value=selectedOptions(raw);if(value)field(r,key,value,evidence(name,row.locator+`／儲存格 ${i+2}`,raw));}}
  fromText(r);
- // Legacy purchase documents have a known field schema; preserve the customer/internal distinction.
- if(!checklist)for(const f of p.fields){const map={notes:'notes',customerPart:'customerPart',part:'internalPart',quantity:'quantity',material:'material',copper:'copper',mask:'mask',finish:'finish',inspection:'inspection',ul:'ul'};const key=f.key==='part'&&!/銘星|本公司/.test(f.label)?null:map[f.key];if(key&&!r.fields[key]&&f.value)field(r,key,f.value,evidence(name,`Word 儲存格 ${f.cell+1}`,f.value));}
  if(checklist){
   r.issues.push({id:'checklist-only',severity:'block',title:'Layout 檢查表不是完整製造規格',detail:'只提取明確的料號與層數。檢查項目的完成符號、設計通則與問句不視為本次製作要求；請補齊製作申請單／Gerber 規格。',source:'文件標題'});
   for(const key of Object.keys(r.fields))if(!['customerPart','internalPart','layers','project','revision'].includes(key))delete r.fields[key];
@@ -62,7 +64,7 @@ export async function readRequirementDocx(data,name){
  if(r.fields.gerber)r.issues.push({id:'gerber-file',severity:'block',title:'Gerber 交付資訊不等於已核對 Gerber',detail:'目前只讀取需求文件，沒有驗證實際 Gerber／鑽孔檔與版次。請確認檔案包、料號及版本一致。',source:r.fields.gerber.evidence[0].locator});
  if(r.fields.impedance)r.issues.push({id:'impedance-stackup',severity:'block',title:'阻抗與疊構需工程確認',detail:'已保留阻抗值、公差、層別與線寬／線距原文；尚未計算疊構，也未證明板廠可依此製造。請取得疊構／阻抗確認。',source:r.fields.impedance.evidence[0].locator});
  if(r.fields.panel&&/附件|PDF/i.test(r.fields.panel.value))r.issues.push({id:'panel-attachment',severity:'block',title:'排版附件尚未核對',detail:'需求單引用排版圖，且可能同時含未勾選選項旁的檔名。請確認本次適用的排版圖與 V-Cut／Routing 工法。',source:r.fields.panel.evidence[0].locator});
- return r;
+ return normalizeIntake(r);
 }
 const colIndex=s=>[...s].reduce((v,c)=>v*26+c.charCodeAt(0)-64,0);
 function resolvePath(base,target){const parts=(target.startsWith('/')?target.slice(1):base+'/'+target).split('/'),out=[];for(const p of parts){if(p==='..')out.pop();else if(p&&p!=='.')out.push(p);}return out.join('/');}
@@ -73,7 +75,7 @@ export async function readRequirementXlsx(data,name){
  const r=fresh(name,'Excel 工程流程單','');r.sheets=[];const areas=els(book,'definedName',S).filter(n=>n.getAttribute('name')==='_xlnm.Print_Area');
  for(const [si,s]of els(book,'sheet',S).entries()){
   const title=s.getAttribute('name'),path=resolvePath('xl',rels[s.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships','id')]||'');if(!zip.file(path))continue;
-  const x=parseXml(await zip.file(path).async('string')),reference=/加註|符號|範例|備忘錄|參考/.test(title)||s.getAttribute('state')==='hidden';
+  const x=parseXml(await zip.file(path).async('string')),reference=/加註|符號|範例|備忘錄|參考|^(?:其它|其他|圖庫)$/.test(title)||s.getAttribute('state')==='hidden';
   const area=areas.find(a=>+a.getAttribute('localSheetId')===si)?.textContent,maxColumn=area?.match(/:\$?([A-Z]+)\$?\d+/)?.[1];
   const cells=els(x,'c',S).map(c=>{const addr=c.getAttribute('r'),t=c.getAttribute('t'),v=els(c,'v',S)[0]?.textContent;let value=t==='s'?strings[+v]:t==='inlineStr'?plain(c):v||'';return {addr,value:trim(value),formula:els(c,'f',S)[0]?.textContent,reference:reference||(maxColumn&&colIndex(addr.match(/^[A-Z]+/)[0])>colIndex(maxColumn))};}).filter(c=>c.value||c.formula);
   const byAddr=Object.fromEntries(cells.map(c=>[c.addr,c]));const sheet={name:title,path,reference,cells,shapes:[],lines:0};
@@ -83,21 +85,9 @@ export async function readRequirementXlsx(data,name){
   r.sheets.push(sheet);
   if(reference)continue;
   for(const c of cells.filter(c=>!c.reference&&c.formula))r.issues.push({id:'formula-'+si+'-'+c.addr,severity:'block',title:'公式快取尚未重算',detail:'此處僅讀取 Excel 儲存值，不執行公式；請以 Excel 重算後確認。',source:title+'!'+c.addr});
-  // Detect this work-flow layout by structure, never by file name or customer identity.
-  const heading=(byAddr.D1?.value||'').replace(/\s/g,'');
-  if(/層板工作流程表/.test(heading)&&byAddr.D3&&byAddr.T4){
-   const put=(key,addr,ambiguity='')=>{const c=byAddr[addr];if(c?.value)field(r,key,c.value,evidence(name,title+'!'+addr,c.value),ambiguity);};
-   put('customerPart','D3');put('material','T4');put('thickness','V7',/[a-zμµ]/i.test(byAddr.V7?.value||'')?'':'成品板厚未標示長度單位；不得自行當成 inch 或 mm。');put('size','V6','尺寸未明示長度單位。');put('copper','V8');put('baseCopper','K8');
-   const layer=heading.match(/[（(](\d+)[）)]層板/)?.[1];if(layer)field(r,'layers',layer,evidence(name,title+'!D1',byAddr.D1.value));
-   if(byAddr.S2||byAddr.S3)field(r,'panel',[byAddr.S2?.value,byAddr.S3?.value].filter(Boolean).join(' / '),evidence(name,title+'!S2:S3',[byAddr.S2?.value,byAddr.S3?.value].join(' / ')),'排版用量／裁板資訊，不代表本次訂購數量。');
-   const process=cells.filter(c=>/^C\d+$/.test(c.addr)&&+c.addr.slice(1)>=13&&+c.addr.slice(1)<=32&&!c.reference).map(c=>c.value).join('；');field(r,'process',process,evidence(name,title+'!C13:C32',process));
-  }
+  readManufacturingCells(sheet,(key,value,addr,ambiguity='')=>field(r,key,value,evidence(name,title+'!'+addr,value),ambiguity),selectedOptions);
   if(/流程表反面/.test(title)){
    const put=(key,value,addr,ambiguity='')=>{if(value)field(r,key,value,evidence(name,title+'!'+addr,value),ambiguity);};
-   if(/[■☑]/.test(byAddr.S7?.value||''))put('mask',byAddr.T7?.value,'S7:T7');
-   if(/[■☑]/.test(byAddr.C9?.value||''))put('legend',[byAddr.D9?.value,/[■☑]/.test(byAddr.C8?.value||'')?byAddr.D8?.value+'面':''].filter(Boolean).join('／'),'C8:D9');
-   const fin=['C13','C30'].filter(a=>byAddr[a]?.value).map(a=>byAddr[a].value);if(fin.length)put('finish',fin.join('／'),'C13,C30','流程列不代表已啟用製程，且有多個表面處理項目。需人工核對線段／劃除標記與本次工藝。');
-   const rep=selectedOptions(byAddr.O27?.value||'');put('reports',rep,'O27');put('inspection',byAddr.O25?.value.replace(/[□☐].*$/,'').trim(),'O25');
    const markings=cells.filter(c=>/^([A-K])(3[2-6])$/.test(c.addr)).map(c=>c.value).join(' ');put('marking',markings,'A32:K36','LOGO、週期與文字有圖形覆蓋／標記，需確認適用項目。');
    const specials=['Y10','O15','O17','O20','R20','W23'].filter(a=>byAddr[a]?.value).map(a=>a+'：'+byAddr[a].value).join('\n');put('special',specials,'Y10,O15,O17,O20,R20,W23');
    if(sheet.lines)r.issues.push({id:'visual-process',severity:'block',title:'工單含圖形線段／劃除標記',detail:`${sheet.lines} 個線段可能表示停用、修改或流程標記；讀取儲存格無法判定意義。請開啟原 Excel 確認表面處理與 LOGO。`,source:title+'／繪圖物件'});
@@ -105,10 +95,10 @@ export async function readRequirementXlsx(data,name){
  }
  r.text=r.sheets.map(s=>`【${s.name}${s.reference?'／參考區，不直接帶入':''}】\n`+s.cells.map(c=>`${c.addr}${c.reference?' [參考]':''}：${c.value}`).join('\n')+'\n'+s.shapes.map(sh=>`圖形(${sh.row},${sh.col})${sh.reference?' [參考]':''}：${sh.text}`).join('\n')).join('\n\n');
  r.issues.push({id:'xlsx-reference',severity:'info',title:'參考區與生產需求分開',detail:'符號／疊構範例頁及列印範圍外的油墨表只保留供核對，不自動指定為本次材料、層數或顏色。',source:'工作表與列印範圍'});
- r.issues.push({id:'xlsx-layout-quantity',severity:'block',title:'排版資訊不能當作本次訂購量',detail:'排版欄位 '+(r.fields.panel?.value||'未明示')+' 可能是裁板／排版參數；需由客戶確認訂購數量及 PCS／PNL 單位。',source:'排版欄位'});
- return r;
+ if(!r.fields.quantity)r.issues.push({id:'xlsx-layout-quantity',severity:'info',title:'工單未列訂購數量，保留目前值',detail:'排版欄位 '+(r.fields.panel?.value||'未明示')+' 是裁板／每板資訊，不代表本次訂購數量。',source:'排版欄位'});
+ return normalizeIntake(r);
 }
-export function readRequirementText(text,name='貼上文字',ocr=false){const r=fresh(name,ocr?'OCR／PDF 需求文字':'文字需求',text);fromText(r);if(ocr)r.issues.push({id:'ocr-verify',severity:'block',title:'需核對 OCR／PDF 的選項與數字',detail:'文字擷取可能遺失勾選框、圖形與版面，請對照原圖確認層數、單位、尺寸與選項。',source:name});return r;}
+export function readRequirementText(text,name='貼上文字',ocr=false){const r=fresh(name,ocr?'OCR／PDF 需求文字':'文字需求',text);fromText(r);if(ocr)r.issues.push({id:'ocr-verify',severity:'block',title:'需核對 OCR／PDF 的選項與數字',detail:'文字擷取可能遺失勾選框、圖形與版面，請對照原圖確認層數、單位、尺寸與選項。',source:name});return normalizeIntake(r);}
 export function checkRequirement(r,template,now=new Date()){
  const findings=r.issues.filter(i=>i.id!=='panel-count');
  const q=r.fields.quantity?.value.match(/(\d+)\s*PCS[^\n]*?(\d+)\s*panel/i),pn=r.fields.panel?.value.match(/(?:連板[:：]?\s*)?(\d+)\s*連板/);
@@ -142,7 +132,7 @@ export function requirementTargets(template,key){
 export function requirementSummary(r){return Object.values(r.fields).filter(f=>f.value?.trim()).map(f=>({key:f.key,label:f.label,value:f.value,source:f.origin==='manual'?'人工確認：'+f.note:(f.evidence||[]).map(e=>e.file+'／'+e.locator).join('；')}));}
 export function requirementMapping(r,template){
  const values={},groups=new Map();
- for(const [key,entry]of Object.entries(r.fields)){if(!entry.value?.trim()||['delivery','internalPart'].includes(key)&&!entry.value)continue;for(const t of requirementTargets(template,key)){if(['date','delivery'].includes(t.key))continue;const items=groups.get(t.id)||[];items.push({key,value:entry.value,label:requirementFields[key]||entry.label});groups.set(t.id,items);}}
+ for(const [key,entry]of Object.entries(r.fields)){if(entry.blocked||!entry.value?.trim()||['delivery','internalPart'].includes(key)&&!entry.value)continue;for(const t of requirementTargets(template,key)){if(['date','delivery'].includes(t.key))continue;const items=groups.get(t.id)||[];items.push({key,value:entry.value,label:requirementFields[key]||entry.label});groups.set(t.id,items);}}
  for(const t of template.fields){const items=groups.get(t.id);if(!items)continue;values[t.id]=items.map(e=>{if(e.key===t.key||e.key==='internalPart'&&t.key==='part')return e.value;if(e.key==='layers')return /層|L(?:ayer)?s?$/i.test(e.value)?e.value:e.value+' 層';if(e.key==='due')return '交期：'+e.value;return e.label+'：'+e.value;}).join('\n');}
  values.__requirementAppendix=requirementSummary(r);return values;
 }

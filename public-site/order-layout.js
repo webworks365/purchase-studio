@@ -1,4 +1,5 @@
-import {applyDueRequirement,fixedDelivery} from './inline-due.js';
+import {applyDueRequirement,fixedDelivery,dueTarget} from './inline-due.js';
+import {replaceOriginalDue} from './due-date.js';
 import {bisSpareDefault} from './note-format.js';
 import {requirementFields,requirementMapping,requirementTargets} from './requirements.js';
 export const DELIVERY='銘星科技有限公司';
@@ -35,19 +36,33 @@ export function normalizeDraft(s,draft){
  if(draft.notesPolicyVersion!==2){removeGeneratedNotes(s,draft.values);draft.notesPolicyVersion=2;}
 }
 function patchCombined(base,key,value){
- const patterns={layers:/\b\d+\s*(?:L(?:ayers?)?\b|層)/i,thickness:/(?:板厚|厚度|\bT)\s*\d+(?:\.\d+)?\s*T?\s*(?:mm|mil|inch)?|\b\d+(?:\.\d+)?\s*(?:mm|mil|inch)/i};
- if(key==='material'){if(/[／/]/.test(value))return value;const first=base.search(/[／/]/);if(first>=0)return value+base.slice(first);const at=base.search(/\b\d+\s*L\b|(?:板厚|厚度|\bT)\s*\d/i);return at>0?value+' '+base.slice(at):value;}
+ if(key==='thickness'&&compact(base).includes(compact(value)))return base;
+ const patterns={layers:/(?:PCB\s*)?層數\s*[:：]\s*\d+\s*(?:L(?:ayers?)?|層)?|\b\d+\s*(?:L(?:ayers?)?\b|層)/i,thickness:/(?:成品板厚(?:與公差)?|板厚|厚度|\bT)\s*[:：]?\s*\d+(?:\.\d+)?(?:\s*(?:±|\+\/-)\s*\d+(?:\.\d+)?)?\s*T?\s*(?:mm|mil|inch)?|\b\d+(?:\.\d+)?(?:\s*(?:±|\+\/-)\s*\d+(?:\.\d+)?)?\s*(?:mm|mil|inch)/i};
+ if(key==='material'){if(/^FR-?4$/i.test(value.trim())&&/^FR-?4(?:\b|TG)/i.test(base.trim()))return base;if(/[／/]/.test(value))return value;const first=base.search(/[／/]/);if(first>=0)return value+base.slice(first);const at=base.search(/\b\d+\s*L\b|(?:板厚|厚度|\bT)\s*\d/i);return at>0?value+' '+base.slice(at):value;}
  if(patterns[key]){const v=key==='layers'&&!/層|L(?:ayers?)?$/i.test(value)?value+'L':value;return patterns[key].test(base)?base.replace(patterns[key],()=>v):[base,requirementFields[key]+'：'+value].filter(Boolean).join('／');}
  return value;
 }
 export function intakeValues(r,s,previous={}){
- const cleanPrevious={...previous};removeGeneratedNotes(s,cleanPrevious);const mapped=requirementMapping(r,s),values={...cleanPrevious,...mapped};
+ const cleanPrevious={...previous},old=previous.__requirementApplied,part=r.fields.customerPart?.value?.trim(),changedCustomer=old?.customerPart&&part&&compact(old.customerPart)!==compact(part);
+ if(changedCustomer){for(const f of s.fields)if(old.values?.[f.id]!==undefined&&previous[f.id]===old.values[f.id])cleanPrevious[f.id]=previous.__dueDate?replaceOriginalDue(f.value,previous.__dueDate):f.value;cleanPrevious.__images=[];}
+ removeGeneratedNotes(s,cleanPrevious);const mapped=requirementMapping(r,s),values={...cleanPrevious,...mapped};
  for(const f of s.fields)if(!Object.hasOwn(values,f.id))values[f.id]=f.value;
  for(const f of s.fields){
-  const items=Object.entries(r.fields).filter(([key,e])=>e.value?.trim()&&requirementTargets(s,key).some(t=>t.id===f.id));
-  if(f.key==='material'&&items.length){let base=previous[f.id]??f.value;for(const key of ['material','layers','thickness']){const e=items.find(([k])=>k===key);if(e)base=patchCombined(base,key,e[1].value);}values[f.id]=base;}
+  const items=Object.entries(r.fields).filter(([key,e])=>!e.blocked&&e.value?.trim()&&requirementTargets(s,key).some(t=>t.id===f.id));
+  if(f.key==='material'&&items.length){const complete=['material','layers','thickness'].every(key=>items.some(([k])=>k===key));let base=complete?f.value:cleanPrevious[f.id]??f.value;for(const key of ['material','layers','thickness']){const e=items.find(([k])=>k===key);if(e)base=patchCombined(base,key,e[1].value);}values[f.id]=base;}
   if(['production','notes','notesTail'].includes(f.key)&&mapped[f.id]!==undefined)values[f.id]=addUnique(cleanPrevious[f.id]??f.value,'',mapped[f.id]);
   if(f.key==='delivery')values[f.id]=values.__inlineDue?fixedDelivery(values[f.id]):DELIVERY;
  }
- applyDueRequirement(s,values,cleanPrevious,r);mergeSupplements(s,values);return values;
+ applyDueRequirement(s,values,cleanPrevious,r);mergeSupplements(s,values);
+ const applied=changedCustomer?{}:{...old?.values};for(const [key,entry]of Object.entries(r.fields))if(!entry.blocked&&entry.value?.trim())for(const f of requirementTargets(s,key))if(!['date','delivery'].includes(f.key))applied[f.id]=values[f.id];
+ if(r.fields.due?.value&&!r.fields.due.blocked){const target=dueTarget(s);if(target)applied[target.id]=values[target.id];}
+ values.__requirementApplied={customerPart:part||old?.customerPart||'',values:applied};return values;
+}
+export function intakeReport(r,s,before,after){
+ const targets=new Set(Object.entries(r.fields).filter(([,e])=>!e.blocked&&e.value?.trim()).flatMap(([key])=>requirementTargets(s,key)).filter(f=>!['date','delivery'].includes(f.key)).map(f=>f.id));
+ const same=(a,b)=>String(a??'').replace(/\s+/g,' ').trim()===String(b??'').replace(/\s+/g,' ').trim();
+ const changed=s.fields.filter(f=>targets.has(f.id)&&!same(before[f.id]??f.value,after[f.id]));
+ const unchanged=s.fields.filter(f=>targets.has(f.id)&&same(before[f.id]??f.value,after[f.id]));
+ const blocked=Object.values(r.fields).filter(e=>e.blocked).map(e=>e.label);
+ return {recognized:targets.size,changed:changed.map(f=>f.label),unchanged:unchanged.map(f=>f.label),blocked};
 }

@@ -5,7 +5,7 @@ export function transferDue(template,values,raw){const target=dueTarget(template
 export function applyDueRequirement(template,values,previous,requirement){
  if(!previous.__inlineDue)return;
  const target=dueTarget(template);if(!target)return;
- const due=requirement.fields.due?.value?.trim(),quantity=requirement.fields.quantity?.value?.trim();
+ const due=requirement.fields.due?.blocked?'':requirement.fields.due?.value?.trim(),quantity=requirement.fields.quantity?.blocked?'':requirement.fields.quantity?.value?.trim();
  const old=String(previous[target.id]??target.value),parts=splitQuantityDue(old);
  if(!due&&!quantity)return;
  if(target.key==='delivery'){
